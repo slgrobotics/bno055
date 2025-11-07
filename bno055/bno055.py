@@ -111,9 +111,11 @@ def main(args=None):
                 node.sensor.get_sensor_data()
             except BusOverRunException:
                 # data not available yet, wait for next cycle | see #5
+                node.get_logger().warn('Receiving sensor data failed: BusOverRunException')
                 return
             except ZeroDivisionError:
                 # division by zero in get_sensor_data, return
+                node.get_logger().warn('Receiving sensor data failed: ZeroDivisionError')
                 return
             except Exception as e:  # noqa: B902
                 node.get_logger().warn('Receiving sensor data failed with %s:"%s"'

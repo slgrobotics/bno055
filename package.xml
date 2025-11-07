@@ -11,7 +11,7 @@
 
   <!-- For serial UART communication : -->
   <depend>python3-serial</depend>
-  <depend>python3-smbus</depend>
+  <depend>python3-smbus2</depend>
   <!--ROS Client Libraries for Python:-->
   <exec_depend>rclpy</exec_depend>
   <!-- Publishing standard message types: -->

@@ -35,7 +35,8 @@ from bno055 import registers
 from bno055.connectors.Connector import Connector
 from bno055.params.NodeParameters import NodeParameters
 
-from geometry_msgs.msg import Quaternion, Vector3
+from geometry_msgs.msg import Vector3
+from tf_transformations import unit_vector
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
 from sensor_msgs.msg import Imu, MagneticField, Temperature
@@ -62,6 +63,8 @@ class SensorService:
         self.pub_temp = node.create_publisher(Temperature, prefix + 'temp', QoSProf)
         self.pub_calib_status = node.create_publisher(String, prefix + 'calib_status', QoSProf)
         self.srv = self.node.create_service(Trigger, prefix + 'calibration_request', self.calibration_request_callback)
+
+        self.prev_w = -1000.0  # store last valid reading for jump detection
 
     def configure(self):
         """Configure the IMU sensor hardware."""
@@ -183,27 +186,37 @@ class SensorService:
             0.0, self.param.variance_angular_vel.value[1], 0.0,
             0.0, 0.0, self.param.variance_angular_vel.value[2]
         ]
-        # node.get_logger().info('Publishing imu message')
-        self.pub_imu_raw.publish(imu_raw_msg)
 
         # TODO: make this an option to publish?
         # Publish filtered data
         imu_msg.header.stamp = self.node.get_clock().now().to_msg()
         imu_msg.header.frame_id = self.param.frame_id.value
 
-        q = Quaternion()
-        # imu_msg.header.seq = seq
-        q.w = self.unpackBytesToFloat(buf[24], buf[25])
-        q.x = self.unpackBytesToFloat(buf[26], buf[27])
-        q.y = self.unpackBytesToFloat(buf[28], buf[29])
-        q.z = self.unpackBytesToFloat(buf[30], buf[31])
-        # TODO(flynneva): replace with standard normalize() function
-        # normalize
-        norm = sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w)
-        imu_msg.orientation.x = q.x / norm
-        imu_msg.orientation.y = q.y / norm
-        imu_msg.orientation.z = q.z / norm
-        imu_msg.orientation.w = q.w / norm
+        # q = Quaternion()
+        # # imu_msg.header.seq = seq
+        # q.w = self.unpackBytesToFloat(buf[24], buf[25])
+        # q.x = self.unpackBytesToFloat(buf[26], buf[27])
+        # q.y = self.unpackBytesToFloat(buf[28], buf[29])
+        # q.z = self.unpackBytesToFloat(buf[30], buf[31])
+        # # TODO(flynneva): replace with standard normalize() function
+        # # normalize
+        # norm = sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w)
+        # imu_msg.orientation.x = q.x / norm
+        # imu_msg.orientation.y = q.y / norm
+        # imu_msg.orientation.z = q.z / norm
+        # w = imu_msg.orientation.w = q.w / norm
+
+        q = [
+            self.unpackBytesToFloat(buf[26], buf[27]),
+            self.unpackBytesToFloat(buf[28], buf[29]),
+            self.unpackBytesToFloat(buf[30], buf[31]),
+            self.unpackBytesToFloat(buf[24], buf[25])
+        ]
+        q = unit_vector(q)
+
+        imu_msg.orientation.x, imu_msg.orientation.y, imu_msg.orientation.z, imu_msg.orientation.w = q
+        w = imu_msg.orientation.w
+        w_jump = w - self.prev_w
 
         imu_msg.orientation_covariance = imu_raw_msg.orientation_covariance
 
@@ -221,7 +234,6 @@ class SensorService:
         imu_msg.angular_velocity.z = \
             self.unpackBytesToFloat(buf[16], buf[17]) / self.param.gyr_factor.value
         imu_msg.angular_velocity_covariance = imu_raw_msg.angular_velocity_covariance
-        self.pub_imu.publish(imu_msg)
 
         # Publish magnetometer data
         mag_msg.header.stamp = self.node.get_clock().now().to_msg()
@@ -238,7 +250,6 @@ class SensorService:
             0.0, self.param.variance_mag.value[1], 0.0,
             0.0, 0.0, self.param.variance_mag.value[2]
         ]
-        self.pub_mag.publish(mag_msg)
 
         grav_msg.x = \
             self.unpackBytesToFloat(buf[38], buf[39]) / self.param.grav_factor.value
@@ -246,14 +257,25 @@ class SensorService:
             self.unpackBytesToFloat(buf[40], buf[41]) / self.param.grav_factor.value
         grav_msg.z = \
             self.unpackBytesToFloat(buf[42], buf[43]) / self.param.grav_factor.value
-        self.pub_grav.publish(grav_msg)
 
         # Publish temperature
         temp_msg.header.stamp = self.node.get_clock().now().to_msg()
         temp_msg.header.frame_id = self.param.frame_id.value
         # temp_msg.header.seq = seq
         temp_msg.temperature = float(buf[44])
-        self.pub_temp.publish(temp_msg)
+
+        # ignore large jumps in orientation data - skip the cycle if detected:
+        if abs(w_jump) < 0.1:
+            # self.node.get_logger().info('Publishing imu messages')
+            self.pub_imu_raw.publish(imu_raw_msg)
+            self.pub_imu.publish(imu_msg)
+            self.pub_mag.publish(mag_msg)
+            self.pub_grav.publish(grav_msg)
+            self.pub_temp.publish(temp_msg)
+        #else:
+        #    self.node.get_logger().warn(f"Skipped publishing due to large jump: {w_jump:+.3f}")
+
+        self.prev_w = w
 
     def get_calib_status(self):
         """
