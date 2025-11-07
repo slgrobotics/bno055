@@ -36,7 +36,6 @@ from bno055.connectors.Connector import Connector
 from bno055.params.NodeParameters import NodeParameters
 
 from geometry_msgs.msg import Vector3
-from tf_transformations import unit_vector
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
 from sensor_msgs.msg import Imu, MagneticField, Temperature
@@ -65,10 +64,11 @@ class SensorService:
         self.srv = self.node.create_service(Trigger, prefix + 'calibration_request', self.calibration_request_callback)
 
         # Jump detection state variables:
+        self.prev_norm = None            # last computed raw quaternion norm
         self.prev_w = None               # last accepted (published) value
         self.candidate_w = None          # tentative new value
         self.candidate_count = 0         # consecutive readings matching candidate
-        self.THRESHOLD = 0.01            # jump threshold
+        self.THRESHOLD = 0.02            # jump threshold
         self.PERSIST_COUNT = 3           # readings needed to accept candidate
         self.CANDIDATE_TOL = 0.02        # tolerance for candidate stability (optional)
 
@@ -287,13 +287,34 @@ class SensorService:
         # imu_msg.orientation.z = q.z / norm
         # w = imu_msg.orientation.w = q.w / norm
 
+        # Quaternion:
         q = [
-            self.unpackBytesToFloat(buf[26], buf[27]),
-            self.unpackBytesToFloat(buf[28], buf[29]),
-            self.unpackBytesToFloat(buf[30], buf[31]),
-            self.unpackBytesToFloat(buf[24], buf[25])
+            self.unpackBytesToFloat(buf[26], buf[27]), # x
+            self.unpackBytesToFloat(buf[28], buf[29]), # y
+            self.unpackBytesToFloat(buf[30], buf[31]), # z
+            self.unpackBytesToFloat(buf[24], buf[25])  # w
         ]
-        q = unit_vector(q)
+
+        can_publish = False
+
+        # Compute norm safely
+        norm = sqrt(q[0]**2 + q[1]**2 + q[2]**2 + q[3]**2)
+        if norm < 1e-6:
+            self.node.get_logger().warn("Invalid quaternion (zero norm) — skipping normalization.")
+            # Set default neutral quaternion (no rotation)
+            q = [0.0, 0.0, 0.0, 1.0]
+        else:
+            q = [x / norm for x in q]
+            if self.prev_norm is None: # first good value
+                self.prev_norm = norm
+
+        if self.prev_norm is not None:
+            norm_jump = norm - self.prev_norm
+            if abs(norm_jump) > self.prev_norm * 0.05:  # 5% jump
+                self.node.get_logger().warn("Large jump in quaternion norm detected: norm: {}  prev: {}  jump: {}".format(norm, self.prev_norm, norm_jump))
+            else:
+                can_publish = True
+                self.prev_norm = norm
 
         imu_msg.orientation.x, imu_msg.orientation.y, imu_msg.orientation.z, imu_msg.orientation.w = q
         w = imu_msg.orientation.w
@@ -344,7 +365,9 @@ class SensorService:
         # temp_msg.header.seq = seq
         temp_msg.temperature = float(buf[44])
 
-        self.publish_if_valid(w, imu_raw_msg, imu_msg, mag_msg, grav_msg, temp_msg)
+        if can_publish:
+            self.publish_all(imu_raw_msg, imu_msg, mag_msg, grav_msg, temp_msg)
+            #self.publish_if_valid(w, imu_raw_msg, imu_msg, mag_msg, grav_msg, temp_msg)
 
     def get_calib_status(self):
         """
