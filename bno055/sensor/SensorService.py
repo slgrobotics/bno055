@@ -64,7 +64,13 @@ class SensorService:
         self.pub_calib_status = node.create_publisher(String, prefix + 'calib_status', QoSProf)
         self.srv = self.node.create_service(Trigger, prefix + 'calibration_request', self.calibration_request_callback)
 
-        self.prev_w = -1000.0  # store last valid reading for jump detection
+        # Jump detection state variables:
+        self.prev_w = None               # last accepted (published) value
+        self.candidate_w = None          # tentative new value
+        self.candidate_count = 0         # consecutive readings matching candidate
+        self.THRESHOLD = 0.01            # jump threshold
+        self.PERSIST_COUNT = 3           # readings needed to accept candidate
+        self.CANDIDATE_TOL = 0.02        # tolerance for candidate stability (optional)
 
     def configure(self):
         """Configure the IMU sensor hardware."""
@@ -139,6 +145,81 @@ class SensorService:
             self.node.get_logger().warn('Unable to set IMU operation mode into operation mode.')
 
         self.node.get_logger().info('Bosch BNO055 IMU configuration complete.')
+
+    #
+    # The sensor reading often contains invalid large jumps of the orientation w component.
+    # To mitigate this, we implement a simple jump detection and filtering logic.
+    # Publish only if the reading is valid according to jump detection logic
+    #
+    def publish_if_valid(self, w, imu_raw_msg, imu_msg, mag_msg, grav_msg, temp_msg):
+        # first-time case: accept and publish immediately
+        if self.prev_w is None:
+            self.prev_w = w
+            self.publish_all(imu_raw_msg, imu_msg, mag_msg, grav_msg, temp_msg)
+            # reset any candidate state
+            self.candidate_w = None
+            self.candidate_count = 0
+            return
+
+        # difference from last published value
+        w_jump = w - self.prev_w
+
+        # If within threshold of last published value -> normal reading, publish
+        if abs(w_jump) <= self.THRESHOLD:
+            self.publish_all(imu_raw_msg, imu_msg, mag_msg, grav_msg, temp_msg)
+            # accept this as the new published value (keep publishing incremental changes)
+            self.prev_w = w
+            # reset candidate monitoring
+            self.candidate_w = None
+            self.candidate_count = 0
+            return
+
+        # At this point: large jump relative to prev_w — candidate handling
+        # If we have no candidate yet, start one
+        if self.candidate_w is None:
+            self.candidate_w = w
+            self.candidate_count = 1
+            self.node.get_logger().warn(
+                f"Large jump detected: Δw={w_jump:+.3f}. Starting candidate monitoring."
+            )
+            # DO NOT update prev_w; do NOT publish
+            return
+
+        # We already have a candidate: check whether the new reading matches it (within tolerance)
+        if abs(w - self.candidate_w) <= self.CANDIDATE_TOL:
+            self.candidate_count += 1
+            self.node.get_logger().debug(
+                f"Candidate stable count={self.candidate_count} (candidate={self.candidate_w:+.4f})"
+            )
+            # If candidate persisted long enough, accept it
+            if self.candidate_count >= self.PERSIST_COUNT:
+                self.node.get_logger().info(
+                    f"Accepted new stable value after {self.candidate_count} reads: {self.candidate_w:+.3f}"
+                )
+                # Accept candidate: publish and update prev_w
+                # Note: you may want to set prev_w to candidate_w or to the current w (they are close)
+                self.prev_w = self.candidate_w
+                self.publish_all(imu_raw_msg, imu_msg, mag_msg, grav_msg, temp_msg)
+                # reset candidate state
+                self.candidate_w = None
+                self.candidate_count = 0
+        else:
+            # Candidate didn't hold — restart candidate with the newest reading
+            self.node.get_logger().warn(
+                f"Candidate lost (new reading {w:+.4f} deviates from candidate {self.candidate_w:+.4f}). Resetting candidate."
+            )
+            self.candidate_w = w
+            self.candidate_count = 1
+            # still do not publish
+
+    # helper to centralize publishing
+    def publish_all(self, imu_raw_msg, imu_msg, mag_msg, grav_msg, temp_msg):
+        self.pub_imu_raw.publish(imu_raw_msg)
+        self.pub_imu.publish(imu_msg)
+        self.pub_mag.publish(mag_msg)
+        self.pub_grav.publish(grav_msg)
+        self.pub_temp.publish(temp_msg)
+
 
     def get_sensor_data(self):
         """Read IMU data from the sensor, parse and publish."""
@@ -216,7 +297,6 @@ class SensorService:
 
         imu_msg.orientation.x, imu_msg.orientation.y, imu_msg.orientation.z, imu_msg.orientation.w = q
         w = imu_msg.orientation.w
-        w_jump = w - self.prev_w
 
         imu_msg.orientation_covariance = imu_raw_msg.orientation_covariance
 
@@ -264,18 +344,7 @@ class SensorService:
         # temp_msg.header.seq = seq
         temp_msg.temperature = float(buf[44])
 
-        # ignore large jumps in orientation data - skip the cycle if detected:
-        if abs(w_jump) < 0.1:
-            # self.node.get_logger().info('Publishing imu messages')
-            self.pub_imu_raw.publish(imu_raw_msg)
-            self.pub_imu.publish(imu_msg)
-            self.pub_mag.publish(mag_msg)
-            self.pub_grav.publish(grav_msg)
-            self.pub_temp.publish(temp_msg)
-        #else:
-        #    self.node.get_logger().warn(f"Skipped publishing due to large jump: {w_jump:+.3f}")
-
-        self.prev_w = w
+        self.publish_if_valid(w, imu_raw_msg, imu_msg, mag_msg, grav_msg, temp_msg)
 
     def get_calib_status(self):
         """
