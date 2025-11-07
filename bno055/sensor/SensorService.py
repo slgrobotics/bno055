@@ -149,20 +149,9 @@ class SensorService:
 
     def get_sensor_data(self):
         """Read IMU data from the sensor, parse and publish."""
-        # Initialize ROS msgs
-        imu_raw_msg = Imu()
-        imu_msg = Imu()
-        mag_msg = MagneticField()
-        grav_msg = Vector3()
-        temp_msg = Temperature()
 
         # read from sensor
         buf = self.con.receive(registers.BNO055_ACCEL_DATA_X_LSB_ADDR, 45)
-        # Publish raw data
-        imu_raw_msg.header.stamp = self.node.get_clock().now().to_msg()
-        imu_raw_msg.header.frame_id = self.param.frame_id.value
-        # TODO: do headers need sequence counters now?
-        # imu_raw_msg.header.seq = seq
 
         #
         # Sanity check - compute quaternion norm and see if it is valid
@@ -179,7 +168,7 @@ class SensorService:
         # Compute norm safely, return if anything wrong:
         norm = sqrt(q[0]**2 + q[1]**2 + q[2]**2 + q[3]**2)
         if abs(norm - 16000.0) > 1000.0:
-            # small norm - invalid quaternion. It should be usually ~16000, as values are large.
+            # abnormal norm - invalid quaternion. It should be usually ~16000, as values are large.
             self.node.get_logger().warn("Invalid quaternion norm: {} — sensor reading ignored".format(norm))
             return
         else:
@@ -196,6 +185,19 @@ class SensorService:
                 self.prev_norm = norm   # first good reading
 
         # OK, sanity check passed, we are good to publish the data
+
+        # Initialize ROS msgs
+        imu_raw_msg = Imu()
+        imu_msg = Imu()
+        mag_msg = MagneticField()
+        grav_msg = Vector3()
+        temp_msg = Temperature()
+
+        # Publish raw data
+        imu_raw_msg.header.stamp = self.node.get_clock().now().to_msg()
+        imu_raw_msg.header.frame_id = self.param.frame_id.value
+        # TODO: do headers need sequence counters now?
+        # imu_raw_msg.header.seq = seq
 
         # TODO: make this an option to publish?
         imu_raw_msg.orientation_covariance = [
