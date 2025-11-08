@@ -1,3 +1,13 @@
+------------------------
+
+**Note:** this fork fixes the "*data spiking*" issue and uses *smbus2* instead of *smbus* for I2C communication.
+
+Please see [this guide](https://github.com/slgrobotics/robots_bringup/blob/main/Docs/Sensors/BNO055%20IMU.md#issues-when-using-the-standard-ros-2-driver) for details.
+
+Original README follows
+
+------------------------
+
 # A BNO05 ROS2 Package 
 
 ## Description
