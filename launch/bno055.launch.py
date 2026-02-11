@@ -28,6 +28,9 @@
  
 # colcon build; source install/setup.bash; ros2 launch bno055 bno055.launch.py
 
+# see https://github.com/slgrobotics/articubot_one/blob/main/robots/turtle/launch/turtle.sensors.launch.py
+#     https://github.com/slgrobotics/robots_bringup/blob/main/Docs/Sensors/BNO055%20IMU.md
+
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
