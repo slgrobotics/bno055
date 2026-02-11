@@ -26,7 +26,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
  
-# colcon build; source install/setup.bash; ros2 launch bno055 bno055_I2C.launch.py
+# colcon build; source install/setup.bash; ros2 launch bno055 bno055.launch.py
 
 import os
 from ament_index_python.packages import get_package_share_directory
@@ -34,26 +34,48 @@ from launch import LaunchDescription
 from launch_ros.actions import Node
 def generate_launch_description():
 
-    ld = LaunchDescription()
+    namespace = ""
 
-    config = os.path.join(
-        get_package_share_directory('bno055'),
-        'config',
-        'bno055_params_i2c.yaml'
-        )
+    ld = LaunchDescription()
         
-    node = Node(
-        package = 'bno055',
-        executable = 'bno055',
-        namespace = '',
-        parameters = [config],
-        remappings=[("bno055/imu", "imu/data"),
-                    ("bno055/imu_raw", "imu/data_raw"),  
-                    ("bno055/mag","imu/mag"), 
-                    ("bno055/temp", "imu/temp"), 
-                    ("bno055/grav", "imu/grav"), 
-                    ("bno055/calib_status", "imu/calib_status") 
-        ]
+    bno055_driver_node = Node(
+        package='bno055',
+        namespace=namespace,
+        executable='bno055',
+        name='bno055',
+        output='screen',
+        respawn=True,
+        respawn_delay=4,
+        parameters=[{
+            # see https://github.com/slgrobotics/bno055
+            #     https://github.com/slgrobotics/robots_bringup/blob/main/Docs/Sensors/BNO055%20IMU.md
+            'ros_topic_prefix': '',
+            'connection_type': 'i2c',
+            'i2c_bus': 1,
+            'i2c_addr': 0x29,   # Adafruit - 0x28, GY Clone - 0x29 (with both jumpers closed)
+            'data_query_frequency': 30,
+            'calib_status_frequency': 0.1,
+            'frame_id': 'imu_link',
+            'operation_mode': 0x0C, # 0x0C = FMC_ON, 0x0B - FMC_OFF, 0x05 - ACCGYRO, 0x06 - MAGGYRO
+            'placement_axis_remap': 'P1', # P1 - default, ENU. See Bosch BNO055 datasheet section "Axis Remap"
+            'acc_factor': 100.0,
+            'mag_factor': 16000000.0,
+            'gyr_factor': 900.0,
+            'grav_factor': 100.0,
+            'set_offsets': False, # set to true to use offsets below
+            'offset_acc': [0xFFEC, 0x00A5, 0xFFE8],
+            'offset_mag': [0xFFB4, 0xFE9E, 0x027D],
+            'offset_gyr': [0x0002, 0xFFFF, 0xFFFF],
+            # Sensor standard deviation [x,y,z]
+            # Used to calculate covariance matrices
+            # driver defaults are used if parameters below are not provided - bno055/src/bno055/bno055/registers.py:255
+            # see https://chatgpt.com/s/t_691b60f38e1c8191a0a309cbcf99e478
+            'variance_acc': [0.017, 0.017, 0.017], # [m/s^2]      defaults: [0.017, 0.017, 0.017]
+            'variance_angular_vel': [0.04, 0.04, 0.04], # [rad/s] defaults: [0.04, 0.04, 0.04]
+            'variance_orientation': [0.0159, 0.0159, 0.0159], # [rad] - (roll, pitch, yaw)  defaults: [0.0159, 0.0159, 0.0159]
+            'variance_mag': [0.0, 0.0, 0.0], # [Tesla]            defaults: [0.0, 0.0, 0.0]
+        }],
+        remappings=[("imu", "imu/data")]
     )
 
     # for experiments: RViz starts with "map" as Global Fixed Frame, provide a TF to see axes etc.
@@ -71,7 +93,6 @@ def generate_launch_description():
             '--child-frame-id', 'imu_link' # Child frame ID
         ]
     )
-
-    ld.add_action(node)
+    ld.add_action(bno055_driver_node)
     ld.add_action(tf)
     return ld
