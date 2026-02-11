@@ -157,6 +157,10 @@ class SensorService:
         # Sanity check - compute quaternion norm and see if it is valid
         #
 
+        if not buf or len(buf) != 45:
+            self.node.get_logger().warn(f"Short read: got {len(buf) if buf else 0} bytes")
+            return
+
         # Quaternion:
         q = [
             self.unpackBytesToFloat(buf[26], buf[27]), # x
@@ -165,10 +169,34 @@ class SensorService:
             self.unpackBytesToFloat(buf[24], buf[25])  # w
         ]
 
+        """
+        # Alternative approach to quaternion sanity check, needs import np:
+        # After reading q_raw = np.array([x,y,z,w], dtype=float)
+        if not np.all(np.isfinite(q_raw)):
+            warn and return
+
+        if np.all(q_raw == 0):
+            warn and return
+
+        norm = np.linalg.norm(q_raw)
+        if norm < 1e-6:
+            warn and return
+
+        q = q_raw / norm
+
+        # Optional: continuity check
+        if self.prev_q is not None:
+            # Quaternions have sign ambiguity: pick closest
+            if np.dot(self.prev_q, q) < 0:
+                q = -q
+            # Now you can check angle jump if you want
+        self.prev_q = q
+        """
+
         # Compute norm safely, return if anything wrong:
         norm = sqrt(q[0]**2 + q[1]**2 + q[2]**2 + q[3]**2)
-        if abs(norm - 16000.0) > 1000.0:
-            # abnormal norm - invalid quaternion. It should be usually ~16000, as values are large.
+        if abs(norm - 16384.0) > 1000.0:
+            # abnormal norm - invalid quaternion. It should be usually ~16384, as values are large.
             self.node.get_logger().warn("Invalid quaternion norm: {} — sensor reading ignored".format(norm))
             return
         else:
@@ -259,7 +287,7 @@ class SensorService:
         mag_msg.header.frame_id = self.param.frame_id.value
         # mag_msg.header.seq = seq
         mag_msg.magnetic_field.x = \
-            self.unpackBytesToFloat(buf[6], buf[7]) / self.param.mag_factor.value
+            self.unpackBytesToFloat(buf[6], buf[7]) / self.param.mag_factor.value  # 16 million LSB per Tesla, as per datasheet
         mag_msg.magnetic_field.y = \
             self.unpackBytesToFloat(buf[8], buf[9]) / self.param.mag_factor.value
         mag_msg.magnetic_field.z = \
@@ -441,5 +469,7 @@ class SensorService:
         response.message = str(calib_data)
         return response
 
-    def unpackBytesToFloat(self, start, end):
-        return float(struct.unpack('h', struct.pack('BB', start, end))[0])
+    def unpackBytesToFloat(self, lsb: int, msb: int) -> float:
+        # uses native endianness. On most machines it’s little-endian, which matches the sensor data format.
+        #  If you need to specify endianness, you can use '<h' for little-endian or '>h' for big-endian.
+        return float(struct.unpack('h', struct.pack('BB', lsb, msb))[0])

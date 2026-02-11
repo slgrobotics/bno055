@@ -78,7 +78,7 @@ class NodeParameters:
         # scaling factor for acceleration
         node.declare_parameter('acc_factor', value=100.0)
         # scaling factor for magnetometer
-        node.declare_parameter('mag_factor', value=16000000.0)
+        node.declare_parameter('mag_factor', value=16000000.0)  # 16 million LSB per Tesla, as per datasheet
         # scaling factor for gyroscope
         node.declare_parameter('gyr_factor', value=900.0)
         # scaling factor for gyroscope
@@ -152,7 +152,7 @@ class NodeParameters:
             node.get_logger().info('\tacc_factor:\t\t"%s"' % self.acc_factor.value)
 
             self.mag_factor = node.get_parameter('mag_factor')
-            node.get_logger().info('\tmag_factor:\t\t"%s"' % self.mag_factor.value)
+            node.get_logger().info('\tmag_factor:\t\t"%s"' % self.mag_factor.value)  # 16 million LSB per Tesla, as per datasheet
 
             self.gyr_factor = node.get_parameter('gyr_factor')
             node.get_logger().info('\tgyr_factor:\t\t"%s"' % self.gyr_factor.value)
