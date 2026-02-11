@@ -26,7 +26,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
  
-# colcon build; source install/setup.bash; ros2 launch bno055 bno055.launch_I2C.py
+# colcon build; source install/setup.bash; ros2 launch bno055 bno055_I2C.launch.py
 
 import os
 from ament_index_python.packages import get_package_share_directory
