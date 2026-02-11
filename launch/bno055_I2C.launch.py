@@ -43,7 +43,15 @@ def generate_launch_description():
     node=Node(
         package = 'bno055',
         executable = 'bno055',
-        parameters = [config]
+        namespace = '',
+        parameters = [config],
+        remappings=[("bno055/imu", "imu/data"),
+                    ("bno055/imu_raw", "imu/data_raw"),  
+                    ("bno055/mag","imu/mag"), 
+                    ("bno055/temp", "imu/temp"), 
+                    ("bno055/grav", "imu/grav"), 
+                    ("bno055/calib_status", "imu/calib_status") 
+        ]
     )
     ld.add_action(node)
     return ld
