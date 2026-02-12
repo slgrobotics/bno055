@@ -150,7 +150,7 @@ class SensorService:
     def get_sensor_data(self):
         """Read IMU data from the sensor, parse and publish."""
 
-        # read from sensor
+        # read from sensor: 45 bytes starting from BNO055_ACCEL_DATA_X_LSB_ADDR
         buf = self.con.receive(registers.BNO055_ACCEL_DATA_X_LSB_ADDR, 45)
 
         #
@@ -161,7 +161,7 @@ class SensorService:
             self.node.get_logger().warn(f"Short read: got {len(buf) if buf else 0} bytes")
             return
 
-        if self.param.operation_mode.value in [0x0B, 0x0C]:  # FMC_OFF or FMC_ON modes provide fused orientation data
+        if self.param.operation_mode.value in [0x0B, 0x0C]:  # only FMC_OFF or FMC_ON modes provide fused orientation data
             # Quaternion:
             q = [
                 self.unpackBytesToFloat(buf[26], buf[27]), # x
