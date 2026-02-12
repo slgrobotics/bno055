@@ -246,8 +246,8 @@ DEFAULT_OFFSET_MAG = [0xFFB4, 0xFE9E, 0x027D]
 #: +/- 2000 units up to 32000 (dps range dependent)               (1 unit = 1/16 dps)
 DEFAULT_OFFSET_GYR = [0x0002, 0xFFFF, 0xFFFF]
 
-DEFAULT_RADIUS_MAG = 0x0
-DEFAULT_RADIUS_ACC = 0x3E8
+DEFAULT_RADIUS_MAG = 0x0    # Dynamic baseline; requires user movement to calibrate
+DEFAULT_RADIUS_ACC = 0x3E8  # 1000 decimal, means 1G = 1000 units LSB
 #: Sensor standard deviation squared (^2) defaults [x, y, z]
 #: Used to get covariance matrices (stddev^2 = variance)
 #: values taken from this ROS1 driver from octanis:
@@ -256,6 +256,5 @@ DEFAULT_VARIANCE_ACC = [0.017, 0.017, 0.017]
 DEFAULT_VARIANCE_ANGULAR_VEL = [0.04, 0.04, 0.04]
 DEFAULT_VARIANCE_ORIENTATION = [0.0159, 0.0159, 0.0159]
 # TODO(flynneva) calculate default magnetic variance matrice
-DEFAULT_VARIANCE_MAG = [0.0, 0.0, 0.0]
-
+DEFAULT_VARIANCE_MAG = [-1.0, 0.0, 0.0]  # -1 in covariance matrix indicates that the covariance is unknown, see REP 117
 

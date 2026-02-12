@@ -161,56 +161,60 @@ class SensorService:
             self.node.get_logger().warn(f"Short read: got {len(buf) if buf else 0} bytes")
             return
 
-        # Quaternion:
-        q = [
-            self.unpackBytesToFloat(buf[26], buf[27]), # x
-            self.unpackBytesToFloat(buf[28], buf[29]), # y
-            self.unpackBytesToFloat(buf[30], buf[31]), # z
-            self.unpackBytesToFloat(buf[24], buf[25])  # w
-        ]
+        if self.param.operation_mode.value in [0x0B, 0x0C]:  # FMC_OFF or FMC_ON modes provide fused orientation data
+            # Quaternion:
+            q = [
+                self.unpackBytesToFloat(buf[26], buf[27]), # x
+                self.unpackBytesToFloat(buf[28], buf[29]), # y
+                self.unpackBytesToFloat(buf[30], buf[31]), # z
+                self.unpackBytesToFloat(buf[24], buf[25])  # w
+            ]
 
-        """
-        # Alternative approach to quaternion sanity check, needs import np:
-        # After reading q_raw = np.array([x,y,z,w], dtype=float)
-        if not np.all(np.isfinite(q_raw)):
-            warn and return
+            """
+            # Alternative approach to quaternion sanity check, needs import np:
+            # After reading q_raw = np.array([x,y,z,w], dtype=float)
+            if not np.all(np.isfinite(q_raw)):
+                warn and return
 
-        if np.all(q_raw == 0):
-            warn and return
+            if np.all(q_raw == 0):
+                warn and return
 
-        norm = np.linalg.norm(q_raw)
-        if norm < 1e-6:
-            warn and return
+            norm = np.linalg.norm(q_raw)
+            if norm < 1e-6:
+                warn and return
 
-        q = q_raw / norm
+            q = q_raw / norm
 
-        # Optional: continuity check
-        if self.prev_q is not None:
-            # Quaternions have sign ambiguity: pick closest
-            if np.dot(self.prev_q, q) < 0:
-                q = -q
-            # Now you can check angle jump if you want
-        self.prev_q = q
-        """
+            # Optional: continuity check
+            if self.prev_q is not None:
+                # Quaternions have sign ambiguity: pick closest
+                if np.dot(self.prev_q, q) < 0:
+                    q = -q
+                # Now you can check angle jump if you want
+            self.prev_q = q
+            """
 
-        # Compute norm safely, return if anything wrong:
-        norm = sqrt(q[0]**2 + q[1]**2 + q[2]**2 + q[3]**2)
-        if abs(norm - 16384.0) > 1000.0:
-            # abnormal norm - invalid quaternion. It should be usually ~16384, as values are large.
-            self.node.get_logger().warn("Invalid quaternion norm: {} — sensor reading ignored".format(norm))
-            return
-        else:
-            q = [x / norm for x in q]
-            if self.prev_norm is None: # first good value
-                self.prev_norm = norm
-
-        if self.prev_norm is not None:
-            norm_jump = norm - self.prev_norm
-            if abs(norm_jump) > self.prev_norm * 0.05:  # 5% jump
-                self.node.get_logger().warn("Large jump in quaternion norm detected: norm: {}  prev: {}  jump: {}".format(norm, self.prev_norm, norm_jump))
+            # Compute norm safely, return if anything wrong:
+            norm = sqrt(q[0]**2 + q[1]**2 + q[2]**2 + q[3]**2)
+            if abs(norm - 16384.0) > 1000.0:
+                # abnormal norm - invalid quaternion. It should be usually ~16384, as values are large.
+                self.node.get_logger().warn("Invalid quaternion norm: {} — sensor reading ignored".format(norm))
                 return
             else:
-                self.prev_norm = norm   # first good reading
+                q = [x / norm for x in q]
+                if self.prev_norm is None: # first good value
+                    self.prev_norm = norm
+
+            if self.prev_norm is not None:
+                norm_jump = norm - self.prev_norm
+                if abs(norm_jump) > self.prev_norm * 0.05:  # 5% jump
+                    self.node.get_logger().warn("Large jump in quaternion norm detected: norm: {}  prev: {}  jump: {}".format(norm, self.prev_norm, norm_jump))
+                    return
+                else:
+                    self.prev_norm = norm   # first good reading
+        else:
+            # In other modes, we do not have fused orientation data, so we skip the quaternion sanity check
+            q = [0.0, 0.0, 0.0, 1.0]  # default orientation (no rotation)
 
         # OK, sanity check passed, we are good to publish the data
 
