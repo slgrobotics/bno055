@@ -26,7 +26,6 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 import json
-from math import sqrt
 import struct
 import sys
 from time import sleep
@@ -192,28 +191,41 @@ class SensorService:
     def get_sensor_data(self):
         """Read IMU data from the sensor, parse and publish."""
 
-        # read from sensor: 45 bytes starting from BNO055_ACCEL_DATA_X_LSB_ADDR
+        # read from sensor: bytearray, 45 bytes starting from BNO055_ACCEL_DATA_X_LSB_ADDR
         buf = self.con.receive(registers.BNO055_ACCEL_DATA_X_LSB_ADDR, 45)
 
         if not buf or len(buf) != 45:
             self.node.get_logger().warn(f"Short read: got {len(buf) if buf else 0} bytes")
             return
 
-        b = bytes(buf)
+        # if unsure about buffer type, copy the buffer to a bytes object
+        #b = buf if isinstance(buf, (bytes, bytearray, memoryview)) else bytes(buf)
+        b = buf
 
         # Unpack blocks (fewer Python calls)
         ax_raw, ay_raw, az_raw, mx_raw, my_raw, mz_raw, gx_raw, gy_raw, gz_raw = struct.unpack_from("<hhhhhhhhh", b, 0)
-        qw_raw, qx_raw, qy_raw, qz_raw = struct.unpack_from("<hhhh", b, 24)
         lax_raw, lay_raw, laz_raw, grx_raw, gry_raw, grz_raw = struct.unpack_from("<hhhhhh", b, 32)
         temp_raw = struct.unpack_from("<b", b, 44)[0]  # signed
 
-        if self.param.operation_mode.value in [0x0B, 0x0C]:  # only NDOF_FMC_OFF or NDOF (with FMC) modes provide fused orientation data
+        # locals (avoid repeated attribute lookups)
+        now_msg = self.node.get_clock().now().to_msg()
+        frame_id = self.param.frame_id.value
+
+        # dividers to convert raw sensor values to physical units, from driver parameters
+        acc_div = self.param.acc_factor.value
+        gyr_div = self.param.gyr_factor.value
+        grav_div = self.param.grav_factor.value
+
+         # only NDOF_FMC_OFF or NDOF (with FMC) modes provide fused orientation data (but don't provide magnetometer data)
+        if self.param.operation_mode.value in [0x0B, 0x0C]:
+
+            qw_raw, qx_raw, qy_raw, qz_raw = struct.unpack_from("<hhhh", b, 24)
 
             # Normalize quaternion robustly; tolerate modes where it is invalid
             q = np.array([qx_raw, qy_raw, qz_raw, qw_raw], dtype=float)
             norm = float(np.linalg.norm(q))
             if norm < 1e-6 or abs(norm - 16384.0) > 2000.0:
-                self.node.get_logger().warn(f"Invalid quaternion norm: {norm} — sensor reading ignored")
+                self.node.get_logger().warn(f"Invalid quaternion norm: {norm} — publishing identity quaternion")
                 qn = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
             else:
                 qn = q / norm
@@ -221,67 +233,70 @@ class SensorService:
                 if self._prev_q is not None and float(np.dot(self._prev_q, qn)) < 0.0:
                     qn = -qn
                 self._prev_q = qn
+
+            # Header (single timestamp)
+            self._imu_msg.header.stamp = now_msg
+            self._imu_msg.header.frame_id = frame_id
+
+            self._imu_msg.orientation.x, self._imu_msg.orientation.y, self._imu_msg.orientation.z, self._imu_msg.orientation.w = qn
+            self._imu_msg.header.stamp = now_msg
+            self._imu_msg.header.frame_id = frame_id
+
+            # raw gyroscope data
+            self._imu_msg.angular_velocity.x = gx_raw / gyr_div
+            self._imu_msg.angular_velocity.y = gy_raw / gyr_div
+            self._imu_msg.angular_velocity.z = gz_raw / gyr_div
+
+            # “filtered/linear accel” block
+            self._imu_msg.linear_acceleration.x = lax_raw / acc_div
+            self._imu_msg.linear_acceleration.y = lay_raw / acc_div
+            self._imu_msg.linear_acceleration.z = laz_raw / acc_div
+
+            self.pub_imu.publish(self._imu_msg)
+
         else:
-            # In other modes, we do not have fused orientation data, so we skip the quaternion sanity check
-            q = [0.0, 0.0, 0.0, 1.0]  # default orientation (no rotation)
+            # In other modes, we do not have fused orientation data, but have raw magnetometer data
 
-        # OK, sanity check passed, we are good to publish the data
+            # Headers (same timestamp)
+            self._imu_raw_msg.header.stamp = now_msg
+            self._imu_raw_msg.header.frame_id = frame_id
+            self._mag_msg.header.stamp = now_msg
+            self._mag_msg.header.frame_id = frame_id
 
-        self._imu_msg.orientation.x, self._imu_msg.orientation.y, self._imu_msg.orientation.z, self._imu_msg.orientation.w = q
+            # raw accelerometer data
+            self._imu_raw_msg.linear_acceleration.x = ax_raw / acc_div
+            self._imu_raw_msg.linear_acceleration.y = ay_raw / acc_div
+            self._imu_raw_msg.linear_acceleration.z = az_raw / acc_div
 
-        # locals (avoid repeated attribute lookups)
-        now_msg = self.node.get_clock().now().to_msg()
-        frame_id = self.param.frame_id.value
+            # raw gyroscope data
+            self._imu_raw_msg.angular_velocity.x = gx_raw / gyr_div
+            self._imu_raw_msg.angular_velocity.y = gy_raw / gyr_div
+            self._imu_raw_msg.angular_velocity.z = gz_raw / gyr_div
 
-        # Headers (single timestamp)
-        self._imu_raw_msg.header.stamp = now_msg
-        self._imu_raw_msg.header.frame_id = frame_id
-        self._imu_msg.header.stamp = now_msg
-        self._imu_msg.header.frame_id = frame_id
-        self._mag_msg.header.stamp = now_msg
-        self._mag_msg.header.frame_id = frame_id
-        self._temp_msg.header.stamp = now_msg
-        self._temp_msg.header.frame_id = frame_id
+            self.pub_imu_raw.publish(self._imu_raw_msg)
 
-        # dividers to convert raw sensor values to physical units, from driver parameters
-        acc_div = self.param.acc_factor.value
-        gyr_div = self.param.gyr_factor.value
-        mag_div = self.param.mag_factor.value
-        grav_div = self.param.grav_factor.value
+            # raw magnetometer data
+            mag_div = self.param.mag_factor.value
+            self._mag_msg.magnetic_field.x = mx_raw / mag_div  # 16 million LSB per Tesla, as per datasheet
+            self._mag_msg.magnetic_field.y = my_raw / mag_div
+            self._mag_msg.magnetic_field.z = mz_raw / mag_div
 
-        # raw accelerometer data
-        self._imu_raw_msg.linear_acceleration.x = ax_raw / acc_div
-        self._imu_raw_msg.linear_acceleration.y = ay_raw / acc_div
-        self._imu_raw_msg.linear_acceleration.z = az_raw / acc_div
-
-        # raw magnetometer data
-        self._mag_msg.magnetic_field.x = mx_raw / mag_div  # 16 million LSB per Tesla, as per datasheet
-        self._mag_msg.magnetic_field.y = my_raw / mag_div
-        self._mag_msg.magnetic_field.z = mz_raw / mag_div
-
-        # raw gyroscope data
-        self._imu_raw_msg.angular_velocity.x = self._imu_msg.angular_velocity.x = gx_raw / gyr_div
-        self._imu_raw_msg.angular_velocity.y = self._imu_msg.angular_velocity.y = gy_raw / gyr_div
-        self._imu_raw_msg.angular_velocity.z = self._imu_msg.angular_velocity.z = gz_raw / gyr_div
-
-        # “filtered/linear accel” block
-        self._imu_msg.linear_acceleration.x = lax_raw / acc_div
-        self._imu_msg.linear_acceleration.y = lay_raw / acc_div
-        self._imu_msg.linear_acceleration.z = laz_raw / acc_div
+            self.pub_mag.publish(self._mag_msg)
 
         # gravity block
         self._grav_msg.x = grx_raw / grav_div
         self._grav_msg.y = gry_raw / grav_div
         self._grav_msg.z = grz_raw / grav_div
 
-        # temperature - one byte:
-        self._temp_msg.temperature = float(temp_raw)
+        self.pub_grav.publish(self._grav_msg)  # Vector3 does not need header
 
-        # TODO: make some of this an option to publish?
-        self.pub_imu_raw.publish(self._imu_raw_msg)
-        self.pub_imu.publish(self._imu_msg)
-        self.pub_mag.publish(self._mag_msg)
-        self.pub_grav.publish(self._grav_msg)
+        # Header
+        self._temp_msg.header.stamp = now_msg
+        self._temp_msg.header.frame_id = frame_id
+
+        # temperature - one byte:
+        self._temp_msg.temperature = float(temp_raw)  # a signed byte with unit 1 degree Celsius
+
         self.pub_temp.publish(self._temp_msg)
 
 
