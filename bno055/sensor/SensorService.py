@@ -63,6 +63,34 @@ class SensorService:
         self.pub_calib_status = node.create_publisher(String, prefix + 'calib_status', QoSProf)
         self.srv = self.node.create_service(Trigger, prefix + 'calibration_request', self.calibration_request_callback)
 
+        # initialize message objects to reuse for publishing (avoid creating new objects every time):
+        self._imu_raw_msg = Imu()
+        self._imu_msg = Imu()
+        self._mag_msg = MagneticField()
+        self._grav_msg = Vector3()
+        self._temp_msg = Temperature()
+
+        # precompute covariance matrices from parameters (avoid recomputing every time):
+        self._cov_ori = [
+            self.param.variance_orientation.value[0], 0.0, 0.0,
+            0.0, self.param.variance_orientation.value[1], 0.0,
+            0.0, 0.0, self.param.variance_orientation.value[2],
+        ]
+        self._cov_acc = [
+            self.param.variance_acc.value[0], 0.0, 0.0,
+            0.0, self.param.variance_acc.value[1], 0.0,
+            0.0, 0.0, self.param.variance_acc.value[2],
+        ]
+        self._cov_gyr = [
+            self.param.variance_angular_vel.value[0], 0.0, 0.0,
+            0.0, self.param.variance_angular_vel.value[1], 0.0,
+            0.0, 0.0, self.param.variance_angular_vel.value[2],
+        ]
+        self._cov_mag = [
+            self.param.variance_mag.value[0], 0.0, 0.0,
+            0.0, self.param.variance_mag.value[1], 0.0,
+            0.0, 0.0, self.param.variance_mag.value[2],
+        ]
         #
         # The sensor reading often contains invalid large jumps of the orientation w component.
         # To mitigate this, we implement a simple jump detection and filtering logic.
@@ -153,22 +181,29 @@ class SensorService:
         # read from sensor: 45 bytes starting from BNO055_ACCEL_DATA_X_LSB_ADDR
         buf = self.con.receive(registers.BNO055_ACCEL_DATA_X_LSB_ADDR, 45)
 
-        #
-        # Sanity check - compute quaternion norm and see if it is valid
-        #
-
         if not buf or len(buf) != 45:
             self.node.get_logger().warn(f"Short read: got {len(buf) if buf else 0} bytes")
             return
 
+        # Use bytes/memoryview for fast unpack
+        b = bytes(buf)
+
+        # helper: little-endian int16, which matches the sensor data format
+        def i16(off: int) -> int:
+            return struct.unpack_from("<h", b, off)[0]
+
         if self.param.operation_mode.value in [0x0B, 0x0C]:  # only FMC_OFF or FMC_ON modes provide fused orientation data
             # Quaternion:
             q = [
-                self.unpackBytesToFloat(buf[26], buf[27]), # x
-                self.unpackBytesToFloat(buf[28], buf[29]), # y
-                self.unpackBytesToFloat(buf[30], buf[31]), # z
-                self.unpackBytesToFloat(buf[24], buf[25])  # w
+                float(i16(26)),  # x
+                float(i16(28)),  # y
+                float(i16(30)),  # z
+                float(i16(24)),  # w
             ]
+
+            #
+            # Sanity check - compute quaternion norm and see if it is valid
+            #
 
             """
             # Alternative approach to quaternion sanity check, needs import np:
@@ -218,108 +253,73 @@ class SensorService:
 
         # OK, sanity check passed, we are good to publish the data
 
-        # Initialize ROS msgs
-        imu_raw_msg = Imu()
-        imu_msg = Imu()
-        mag_msg = MagneticField()
-        grav_msg = Vector3()
-        temp_msg = Temperature()
+        self._imu_msg.orientation.x, self._imu_msg.orientation.y, self._imu_msg.orientation.z, self._imu_msg.orientation.w = q
 
-        # Publish raw data
-        imu_raw_msg.header.stamp = self.node.get_clock().now().to_msg()
-        imu_raw_msg.header.frame_id = self.param.frame_id.value
-        # TODO: do headers need sequence counters now?
-        # imu_raw_msg.header.seq = seq
+        # locals (avoid repeated attribute lookups)
+        now_msg = self.node.get_clock().now().to_msg()
+        frame_id = self.param.frame_id.value
 
-        # TODO: make this an option to publish?
-        imu_raw_msg.orientation_covariance = [
-            self.param.variance_orientation.value[0], 0.0, 0.0,
-            0.0, self.param.variance_orientation.value[1], 0.0,
-            0.0, 0.0, self.param.variance_orientation.value[2]
-        ]
+        # Headers (single timestamp)
+        self._imu_raw_msg.header.stamp = now_msg
+        self._imu_raw_msg.header.frame_id = frame_id
+        self._imu_msg.header.stamp = now_msg
+        self._imu_msg.header.frame_id = frame_id
+        self._mag_msg.header.stamp = now_msg
+        self._mag_msg.header.frame_id = frame_id
+        self._temp_msg.header.stamp = now_msg
+        self._temp_msg.header.frame_id = frame_id
 
-        imu_raw_msg.linear_acceleration.x = \
-            self.unpackBytesToFloat(buf[0], buf[1]) / self.param.acc_factor.value
-        imu_raw_msg.linear_acceleration.y = \
-            self.unpackBytesToFloat(buf[2], buf[3]) / self.param.acc_factor.value
-        imu_raw_msg.linear_acceleration.z = \
-            self.unpackBytesToFloat(buf[4], buf[5]) / self.param.acc_factor.value
-        imu_raw_msg.linear_acceleration_covariance = [
-            self.param.variance_acc.value[0], 0.0, 0.0,
-            0.0, self.param.variance_acc.value[1], 0.0,
-            0.0, 0.0, self.param.variance_acc.value[2]
-        ]
-        imu_raw_msg.angular_velocity.x = \
-            self.unpackBytesToFloat(buf[12], buf[13]) / self.param.gyr_factor.value
-        imu_raw_msg.angular_velocity.y = \
-            self.unpackBytesToFloat(buf[14], buf[15]) / self.param.gyr_factor.value
-        imu_raw_msg.angular_velocity.z = \
-            self.unpackBytesToFloat(buf[16], buf[17]) / self.param.gyr_factor.value
-        imu_raw_msg.angular_velocity_covariance = [
-            self.param.variance_angular_vel.value[0], 0.0, 0.0,
-            0.0, self.param.variance_angular_vel.value[1], 0.0,
-            0.0, 0.0, self.param.variance_angular_vel.value[2]
-        ]
+        # dividers to convert raw sensor values to physical units, from driver parameters
+        acc_div = self.param.acc_factor.value
+        gyr_div = self.param.gyr_factor.value
+        mag_div = self.param.mag_factor.value
+        grav_div = self.param.grav_factor.value
 
-        # TODO: make this an option to publish?
-        # Publish filtered data
-        imu_msg.header.stamp = self.node.get_clock().now().to_msg()
-        imu_msg.header.frame_id = self.param.frame_id.value
+        # raw accelerometer data
+        ax_raw, ay_raw, az_raw = i16(0), i16(2), i16(4)
+        self._imu_raw_msg.linear_acceleration.x = ax_raw / acc_div
+        self._imu_raw_msg.linear_acceleration.y = ay_raw / acc_div
+        self._imu_raw_msg.linear_acceleration.z = az_raw / acc_div
 
-        imu_msg.orientation.x, imu_msg.orientation.y, imu_msg.orientation.z, imu_msg.orientation.w = q
-        w = imu_msg.orientation.w
+        # raw magnetometer data
+        mx_raw, my_raw, mz_raw = i16(6), i16(8), i16(10)
+        self._mag_msg.magnetic_field.x = mx_raw / mag_div  # 16 million LSB per Tesla, as per datasheet
+        self._mag_msg.magnetic_field.y = my_raw / mag_div
+        self._mag_msg.magnetic_field.z = mz_raw / mag_div
 
-        imu_msg.orientation_covariance = imu_raw_msg.orientation_covariance
+        # raw gyroscope data
+        gx_raw, gy_raw, gz_raw = i16(12), i16(14), i16(16)   # Decode once for both raw and filtered gyro data
+        self._imu_raw_msg.angular_velocity.x = self._imu_msg.angular_velocity.x = gx_raw / gyr_div
+        self._imu_raw_msg.angular_velocity.y = self._imu_msg.angular_velocity.y = gy_raw / gyr_div
+        self._imu_raw_msg.angular_velocity.z = self._imu_msg.angular_velocity.z = gz_raw / gyr_div
 
-        imu_msg.linear_acceleration.x = \
-            self.unpackBytesToFloat(buf[32], buf[33]) / self.param.acc_factor.value
-        imu_msg.linear_acceleration.y = \
-            self.unpackBytesToFloat(buf[34], buf[35]) / self.param.acc_factor.value
-        imu_msg.linear_acceleration.z = \
-            self.unpackBytesToFloat(buf[36], buf[37]) / self.param.acc_factor.value
-        imu_msg.linear_acceleration_covariance = imu_raw_msg.linear_acceleration_covariance
-        imu_msg.angular_velocity.x = \
-            self.unpackBytesToFloat(buf[12], buf[13]) / self.param.gyr_factor.value
-        imu_msg.angular_velocity.y = \
-            self.unpackBytesToFloat(buf[14], buf[15]) / self.param.gyr_factor.value
-        imu_msg.angular_velocity.z = \
-            self.unpackBytesToFloat(buf[16], buf[17]) / self.param.gyr_factor.value
-        imu_msg.angular_velocity_covariance = imu_raw_msg.angular_velocity_covariance
+        # “filtered/linear accel” block
+        lax_raw, lay_raw, laz_raw = i16(32), i16(34), i16(36)
+        self._imu_msg.linear_acceleration.x = lax_raw / acc_div
+        self._imu_msg.linear_acceleration.y = lay_raw / acc_div
+        self._imu_msg.linear_acceleration.z = laz_raw / acc_div
 
-        # Publish magnetometer data
-        mag_msg.header.stamp = self.node.get_clock().now().to_msg()
-        mag_msg.header.frame_id = self.param.frame_id.value
-        # mag_msg.header.seq = seq
-        mag_msg.magnetic_field.x = \
-            self.unpackBytesToFloat(buf[6], buf[7]) / self.param.mag_factor.value  # 16 million LSB per Tesla, as per datasheet
-        mag_msg.magnetic_field.y = \
-            self.unpackBytesToFloat(buf[8], buf[9]) / self.param.mag_factor.value
-        mag_msg.magnetic_field.z = \
-            self.unpackBytesToFloat(buf[10], buf[11]) / self.param.mag_factor.value
-        mag_msg.magnetic_field_covariance = [
-            self.param.variance_mag.value[0], 0.0, 0.0,
-            0.0, self.param.variance_mag.value[1], 0.0,
-            0.0, 0.0, self.param.variance_mag.value[2]
-        ]
+        # gravity block
+        grx_raw, gry_raw, grz_raw = i16(38), i16(40), i16(42)
+        self._grav_msg.x = grx_raw / grav_div
+        self._grav_msg.y = gry_raw / grav_div
+        self._grav_msg.z = grz_raw / grav_div
 
-        grav_msg.x = \
-            self.unpackBytesToFloat(buf[38], buf[39]) / self.param.grav_factor.value
-        grav_msg.y = \
-            self.unpackBytesToFloat(buf[40], buf[41]) / self.param.grav_factor.value
-        grav_msg.z = \
-            self.unpackBytesToFloat(buf[42], buf[43]) / self.param.grav_factor.value
+        # temperature - one byte:
+        temp_raw = b[44]
+        self._temp_msg.temperature = float(temp_raw)
 
-        # Publish temperature
-        temp_msg.header.stamp = self.node.get_clock().now().to_msg()
-        temp_msg.header.frame_id = self.param.frame_id.value
-        # temp_msg.header.seq = seq
-        temp_msg.temperature = float(buf[44])
+        self._imu_raw_msg.orientation_covariance = self._imu_msg.orientation_covariance = self._cov_ori
+        self._imu_raw_msg.linear_acceleration_covariance = self._imu_msg.linear_acceleration_covariance = self._cov_acc
+        self._imu_raw_msg.angular_velocity_covariance = self._imu_msg.angular_velocity_covariance = self._cov_gyr
+        self._mag_msg.magnetic_field_covariance = self._cov_mag
 
-        self.pub_imu_raw.publish(imu_raw_msg)
-        self.pub_imu.publish(imu_msg)
-        self.pub_mag.publish(mag_msg)
-        self.pub_grav.publish(grav_msg)
-        self.pub_temp.publish(temp_msg)
+        # TODO: make some of this an option to publish?
+        self.pub_imu_raw.publish(self._imu_raw_msg)
+        self.pub_imu.publish(self._imu_msg)
+        self.pub_mag.publish(self._mag_msg)
+        self.pub_grav.publish(self._grav_msg)
+        self.pub_temp.publish(self._temp_msg)
 
 
     def get_calib_status(self):
@@ -472,8 +472,3 @@ class SensorService:
         response.success = True
         response.message = str(calib_data)
         return response
-
-    def unpackBytesToFloat(self, lsb: int, msb: int) -> float:
-        # uses native endianness. On most machines it’s little-endian, which matches the sensor data format.
-        #  If you need to specify endianness, you can use '<h' for little-endian or '>h' for big-endian.
-        return float(struct.unpack('h', struct.pack('BB', lsb, msb))[0])
