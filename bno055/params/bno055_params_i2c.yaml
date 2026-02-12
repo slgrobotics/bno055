@@ -36,7 +36,7 @@ bno055:
     data_query_frequency: 100
     calib_status_frequency: 0.1
     frame_id: "imu_link"
-    operation_mode: 0x0C    # OPERATION_MODE_NDOF (FMC_ON)
+    operation_mode: 0x0C    # OPERATION_MODE_NDOF (with FMC)
     placement_axis_remap: "P2"
     acc_factor: 100.0
     mag_factor: 16000000.0  # 16 million LSB per Tesla, as per datasheet

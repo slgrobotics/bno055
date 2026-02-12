@@ -192,7 +192,7 @@ class SensorService:
         def i16(off: int) -> int:
             return struct.unpack_from("<h", b, off)[0]
 
-        if self.param.operation_mode.value in [0x0B, 0x0C]:  # only FMC_OFF or FMC_ON modes provide fused orientation data
+        if self.param.operation_mode.value in [0x0B, 0x0C]:  # only NDOF_FMC_OFF or NDOF modes provide fused orientation data
             # Quaternion:
             q = [
                 float(i16(26)),  # x

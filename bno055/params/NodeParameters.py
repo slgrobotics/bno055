@@ -72,7 +72,7 @@ class NodeParameters:
         # Node timer frequency in Hz, defining how often calibration status data is requested
         node.declare_parameter('calib_status_frequency', value=0.1)
         # sensor operation mode
-        node.declare_parameter('operation_mode', value=0x0C)    # default: OPERATION_MODE_NDOF (FMC_ON)
+        node.declare_parameter('operation_mode', value=0x0C)    # default: OPERATION_MODE_NDOF (with FMC)
         # placement_axis_remap defines the position and orientation of the sensor mount
         node.declare_parameter('placement_axis_remap', value='P1')
         # scaling factor for acceleration
