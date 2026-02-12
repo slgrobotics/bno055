@@ -30,6 +30,7 @@ from math import sqrt
 import struct
 import sys
 from time import sleep
+import numpy as np
 
 from bno055 import registers
 from bno055.connectors.Connector import Connector
@@ -91,6 +92,18 @@ class SensorService:
             0.0, self.param.variance_mag.value[1], 0.0,
             0.0, 0.0, self.param.variance_mag.value[2],
         ]
+
+        # Set covariances once on reused messages
+        self._imu_raw_msg.orientation_covariance = self._cov_ori
+        self._imu_raw_msg.linear_acceleration_covariance = self._cov_acc
+        self._imu_raw_msg.angular_velocity_covariance = self._cov_gyr
+
+        self._imu_msg.orientation_covariance = self._cov_ori
+        self._imu_msg.linear_acceleration_covariance = self._cov_acc
+        self._imu_msg.angular_velocity_covariance = self._cov_gyr
+
+        self._mag_msg.magnetic_field_covariance = self._cov_mag
+
         #
         # The sensor reading often contains invalid large jumps of the orientation w component.
         # To mitigate this, we implement a simple jump detection and filtering logic.
@@ -98,7 +111,8 @@ class SensorService:
         #
 
         # Jump detection state variable:
-        self.prev_norm = None            # last computed raw quaternion norm
+        self._prev_q = None  # for sign continuity / jump checks
+
 
     def configure(self):
         """Configure the IMU sensor hardware."""
@@ -185,68 +199,28 @@ class SensorService:
             self.node.get_logger().warn(f"Short read: got {len(buf) if buf else 0} bytes")
             return
 
-        # Use bytes/memoryview for fast unpack
         b = bytes(buf)
 
-        # helper: little-endian int16, which matches the sensor data format
-        def i16(off: int) -> int:
-            return struct.unpack_from("<h", b, off)[0]
+        # Unpack blocks (fewer Python calls)
+        ax_raw, ay_raw, az_raw, mx_raw, my_raw, mz_raw, gx_raw, gy_raw, gz_raw = struct.unpack_from("<hhhhhhhhh", b, 0)
+        qw_raw, qx_raw, qy_raw, qz_raw = struct.unpack_from("<hhhh", b, 24)
+        lax_raw, lay_raw, laz_raw, grx_raw, gry_raw, grz_raw = struct.unpack_from("<hhhhhh", b, 32)
+        temp_raw = struct.unpack_from("<b", b, 44)[0]  # signed
 
-        if self.param.operation_mode.value in [0x0B, 0x0C]:  # only NDOF_FMC_OFF or NDOF modes provide fused orientation data
-            # Quaternion:
-            q = [
-                float(i16(26)),  # x
-                float(i16(28)),  # y
-                float(i16(30)),  # z
-                float(i16(24)),  # w
-            ]
+        if self.param.operation_mode.value in [0x0B, 0x0C]:  # only NDOF_FMC_OFF or NDOF (with FMC) modes provide fused orientation data
 
-            #
-            # Sanity check - compute quaternion norm and see if it is valid
-            #
-
-            """
-            # Alternative approach to quaternion sanity check, needs import np:
-            # After reading q_raw = np.array([x,y,z,w], dtype=float)
-            if not np.all(np.isfinite(q_raw)):
-                warn and return
-
-            if np.all(q_raw == 0):
-                warn and return
-
-            norm = np.linalg.norm(q_raw)
-            if norm < 1e-6:
-                warn and return
-
-            q = q_raw / norm
-
-            # Optional: continuity check
-            if self.prev_q is not None:
-                # Quaternions have sign ambiguity: pick closest
-                if np.dot(self.prev_q, q) < 0:
-                    q = -q
-                # Now you can check angle jump if you want
-            self.prev_q = q
-            """
-
-            # Compute norm safely, return if anything wrong:
-            norm = sqrt(q[0]**2 + q[1]**2 + q[2]**2 + q[3]**2)
-            if abs(norm - 16384.0) > 1000.0:
-                # abnormal norm - invalid quaternion. It should be usually ~16384, as values are large.
-                self.node.get_logger().warn("Invalid quaternion norm: {} — sensor reading ignored".format(norm))
-                return
+            # Normalize quaternion robustly; tolerate modes where it is invalid
+            q = np.array([qx_raw, qy_raw, qz_raw, qw_raw], dtype=float)
+            norm = float(np.linalg.norm(q))
+            if norm < 1e-6 or abs(norm - 16384.0) > 2000.0:
+                self.node.get_logger().warn(f"Invalid quaternion norm: {norm} — sensor reading ignored")
+                qn = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
             else:
-                q = [x / norm for x in q]
-                if self.prev_norm is None: # first good value
-                    self.prev_norm = norm
-
-            if self.prev_norm is not None:
-                norm_jump = norm - self.prev_norm
-                if abs(norm_jump) > self.prev_norm * 0.05:  # 5% jump
-                    self.node.get_logger().warn("Large jump in quaternion norm detected: norm: {}  prev: {}  jump: {}".format(norm, self.prev_norm, norm_jump))
-                    return
-                else:
-                    self.prev_norm = norm   # first good reading
+                qn = q / norm
+                # sign continuity
+                if self._prev_q is not None and float(np.dot(self._prev_q, qn)) < 0.0:
+                    qn = -qn
+                self._prev_q = qn
         else:
             # In other modes, we do not have fused orientation data, so we skip the quaternion sanity check
             q = [0.0, 0.0, 0.0, 1.0]  # default orientation (no rotation)
@@ -276,43 +250,32 @@ class SensorService:
         grav_div = self.param.grav_factor.value
 
         # raw accelerometer data
-        ax_raw, ay_raw, az_raw = i16(0), i16(2), i16(4)
         self._imu_raw_msg.linear_acceleration.x = ax_raw / acc_div
         self._imu_raw_msg.linear_acceleration.y = ay_raw / acc_div
         self._imu_raw_msg.linear_acceleration.z = az_raw / acc_div
 
         # raw magnetometer data
-        mx_raw, my_raw, mz_raw = i16(6), i16(8), i16(10)
         self._mag_msg.magnetic_field.x = mx_raw / mag_div  # 16 million LSB per Tesla, as per datasheet
         self._mag_msg.magnetic_field.y = my_raw / mag_div
         self._mag_msg.magnetic_field.z = mz_raw / mag_div
 
         # raw gyroscope data
-        gx_raw, gy_raw, gz_raw = i16(12), i16(14), i16(16)   # Decode once for both raw and filtered gyro data
         self._imu_raw_msg.angular_velocity.x = self._imu_msg.angular_velocity.x = gx_raw / gyr_div
         self._imu_raw_msg.angular_velocity.y = self._imu_msg.angular_velocity.y = gy_raw / gyr_div
         self._imu_raw_msg.angular_velocity.z = self._imu_msg.angular_velocity.z = gz_raw / gyr_div
 
         # “filtered/linear accel” block
-        lax_raw, lay_raw, laz_raw = i16(32), i16(34), i16(36)
         self._imu_msg.linear_acceleration.x = lax_raw / acc_div
         self._imu_msg.linear_acceleration.y = lay_raw / acc_div
         self._imu_msg.linear_acceleration.z = laz_raw / acc_div
 
         # gravity block
-        grx_raw, gry_raw, grz_raw = i16(38), i16(40), i16(42)
         self._grav_msg.x = grx_raw / grav_div
         self._grav_msg.y = gry_raw / grav_div
         self._grav_msg.z = grz_raw / grav_div
 
         # temperature - one byte:
-        temp_raw = b[44]
         self._temp_msg.temperature = float(temp_raw)
-
-        self._imu_raw_msg.orientation_covariance = self._imu_msg.orientation_covariance = self._cov_ori
-        self._imu_raw_msg.linear_acceleration_covariance = self._imu_msg.linear_acceleration_covariance = self._cov_acc
-        self._imu_raw_msg.angular_velocity_covariance = self._imu_msg.angular_velocity_covariance = self._cov_gyr
-        self._mag_msg.magnetic_field_covariance = self._cov_mag
 
         # TODO: make some of this an option to publish?
         self.pub_imu_raw.publish(self._imu_raw_msg)
