@@ -64,18 +64,18 @@ class I2C(Connector):
         """
         for addr in self.i2c_addresses:
             try:
-                self.node._logger.info(f"IP: trying I2C address: 0x{addr: 02x}")
+                self.node.get_logger().info(f"IP: trying I2C address: 0x{addr: 02x}")
                 returned_id = self.bus.read_byte_data(addr, registers.BNO055_CHIP_ID_ADDR)
                 if returned_id == registers.BNO055_ID:
                     self.address = addr
-                    self.node._logger.info(f"   address: 0x{self.address: 02x}  chip ID: 0x{returned_id: 02x} ✓ (connected)")
+                    self.node.get_logger().info(f"   address: 0x{self.address: 02x}  chip ID: 0x{returned_id: 02x} ✓ (connected)")
                     break
             except Exception as e:
-                self.node._logger.info(f"   i2c address 0x{addr: 02x} failed to connect")
+                self.node.get_logger().info(f"   i2c address 0x{addr: 02x} failed to connect")
                 continue
 
         if self.address is None:
-            self.node._logger.error(f"Could not connect to BNO055 via I2C. Tried addresses: {[f'0x{addr: 02x}' for addr in self.i2c_addresses]}")
+            self.node.get_logger().error(f"Could not connect to BNO055 via I2C. Tried addresses: {[f'0x{addr: 02x}' for addr in self.i2c_addresses]}")
 
 
     def read(self, reg_addr, length):
