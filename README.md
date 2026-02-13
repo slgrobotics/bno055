@@ -1,10 +1,18 @@
 ------------------------
 
-**Note:** this fork fixes the "*data spiking*" issue and uses *smbus2* instead of *smbus* for I2C communication.
+**Note:** this fork fixes the "*data spiking*" issue and uses *smbus2* instead of *smbus* for I2C communication. There's some code optimization and refactoring.
 
 Please see [this guide](https://github.com/slgrobotics/robots_bringup/blob/main/Docs/Sensors/BNO055%20IMU.md#issues-when-using-the-standard-ros-2-driver) for details.
 
-Original README follows
+**Note changes in parameters:**
+- `i2c_bus`: The integer I2C bus number to use; default=0     - Raspberry Pi mostly uses bus=1
+- `i2c_address`: The hexadecimal I2C addresses to use; default=[0x28,0x29]   - now will try addresses from a list
+
+**Look for examples** in [launch](https://github.com/slgrobotics/bno055/tree/main/launch) folder
+
+------------------------
+
+Original README follows:
 
 ------------------------
 
