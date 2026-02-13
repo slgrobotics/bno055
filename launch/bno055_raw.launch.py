@@ -127,7 +127,7 @@ def generate_launch_description():
             '--pitch', '0.0', # Pitch in radians
             '--yaw', '0.0',   # Yaw in radians (e.g., 90 degrees)
             '--frame-id', 'map', # Parent frame ID
-            '--child-frame-id', 'imu_link' # Child frame ID
+            '--child-frame-id', 'odom' # Child frame ID
         ]
     )
     ld.add_action(bno055_driver_raw_node)
