@@ -94,7 +94,10 @@ class Bno055Node(Node):
         status_period = 1.0 / float(self.param.calib_status_frequency.value)
 
         self._data_timer = self.create_timer(data_period, self._read_data_cb)
-        self._status_timer = self.create_timer(status_period, self._calib_status_cb)
+
+        if self.sensor.is_fusing_mode:
+            # Only start calib status timer if we are in a fusing mode that provides calibration status data.
+            self._status_timer = self.create_timer(status_period, self._calib_status_cb)
 
         self.get_logger().info(
             f"Timers started: data={1.0/data_period:.2f} Hz, status={1.0/status_period:.2f} Hz"

@@ -93,6 +93,12 @@ class SensorService:
             0.0, 0.0, self.param.variance_mag.value[2],
         ]
 
+        self._cov_unknown = [ 
+            -1.0, 0.0, 0.0,
+             0.0, -1.0, 0.0,
+             0.0, 0.0, -1.0,
+        ]
+
         # Set covariances once on reused messages
         self._imu_raw_msg.orientation_covariance = self._cov_ori
         self._imu_raw_msg.linear_acceleration_covariance = self._cov_acc
@@ -181,7 +187,13 @@ class SensorService:
 
         # Set Device mode
         device_mode = self.param.operation_mode.value
-        self.node.get_logger().info(f"Setting device_mode to {device_mode}")
+        self.is_fusing_mode = self.param.operation_mode.value in [0x0B, 0x0C]
+        # only NDOF_FMC_OFF or NDOF (with FMC) modes provide fused orientation data (but mag data reads zeroes)
+        self.node.get_logger().info(f"Setting device_mode to {device_mode}  is_fusing_mode={self.is_fusing_mode}")
+
+        if not self.is_fusing_mode:
+            # In non-fusing modes, the orientation data is not valid, so set covariance to -1 to indicate unknown.
+            self._cov_ori = self._cov_unknown
 
         if not (self.con.transmit(registers.BNO055_OPR_MODE_ADDR, 1, bytes([device_mode]))):
             self.node.get_logger().warn('Unable to set IMU operation mode into operation mode.')
@@ -222,7 +234,7 @@ class SensorService:
         grav_div = self.param.grav_factor.value
 
         # only NDOF_FMC_OFF or NDOF (with FMC) modes provide fused orientation data (but mag data reads zeroes)
-        if self.param.operation_mode.value in [0x0B, 0x0C]:
+        if self.is_fusing_mode:
 
             qw_raw, qx_raw, qy_raw, qz_raw = struct.unpack_from("<hhhh", b, 24)
 
@@ -261,6 +273,13 @@ class SensorService:
 
             self.pub_imu.publish(self._imu_msg)
 
+            # gravity block
+            self._grav_msg.x = grx_raw / grav_div
+            self._grav_msg.y = gry_raw / grav_div
+            self._grav_msg.z = grz_raw / grav_div
+
+            self.pub_grav.publish(self._grav_msg)  # Vector3 does not need header. Use Vector3Stamped if you need timestamp and frame_id
+
         else:
             # In other modes, we do not have fused orientation data, but have raw magnetometer data
 
@@ -289,13 +308,6 @@ class SensorService:
             self._mag_msg.magnetic_field.z = mz_raw / mag_div
 
             self.pub_mag.publish(self._mag_msg)
-
-        # gravity block
-        self._grav_msg.x = grx_raw / grav_div
-        self._grav_msg.y = gry_raw / grav_div
-        self._grav_msg.z = grz_raw / grav_div
-
-        self.pub_grav.publish(self._grav_msg)  # Vector3 does not need header. Use Vector3Stamped if you need timestamp and frame_id
 
         # Header
         self._temp_msg.header.stamp = now_msg
