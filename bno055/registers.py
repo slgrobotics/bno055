@@ -222,12 +222,13 @@ OPERATION_MODE_GYRONLY               = 0X03
 OPERATION_MODE_ACCMAG                = 0X04
 OPERATION_MODE_ACCGYRO               = 0X05
 OPERATION_MODE_MAGGYRO               = 0X06
-OPERATION_MODE_AMG                   = 0X07
-OPERATION_MODE_IMUPLUS               = 0X08
-OPERATION_MODE_COMPASS               = 0X09
-OPERATION_MODE_M4G                   = 0X0A
-OPERATION_MODE_NDOF_FMC_OFF          = 0X0B
-OPERATION_MODE_NDOF                  = 0X0C
+OPERATION_MODE_AMG                   = 0X07  # All three sensors (Accelerometer, Magnetometer, Gyroscope) are active
+# Fusion modes:
+OPERATION_MODE_IMUPLUS               = 0X08  # Fuses accelerometer and gyroscope, will drift
+OPERATION_MODE_COMPASS               = 0X09  # Fuses accelerometer and magnetometer. It acts as a tilt-compensated compass
+OPERATION_MODE_M4G                   = 0X0A  # "Mag-for-Gyro" Similar to IMU mode, but uses the mag instead of the gyro to detect rotation
+OPERATION_MODE_NDOF_FMC_OFF          = 0X0B  # 9-DOF fusion (all sensors) with Fast Mag Calibration (FMC) disabled. It requires a full "figure-eight" motion for calibration but is more stable.
+OPERATION_MODE_NDOF                  = 0X0C  # 9-DOF fusion with FMC enabled. This is the standard "Absolute Orientation" mode, allowing quick auto-calibration with minimal movement. 
 
 #: Communication constants
 COM_START_BYTE_WR = 0xAA

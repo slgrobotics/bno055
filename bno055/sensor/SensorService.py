@@ -35,7 +35,7 @@ from bno055 import registers
 from bno055.connectors.Connector import Connector
 from bno055.params.NodeParameters import NodeParameters
 
-from geometry_msgs.msg import Vector3
+from geometry_msgs.msg import Vector3   # or Vector3Stamped
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
 from sensor_msgs.msg import Imu, MagneticField, Temperature
@@ -58,7 +58,7 @@ class SensorService:
         self.pub_imu_raw = node.create_publisher(Imu, prefix + 'imu_raw', QoSProf)
         self.pub_imu = node.create_publisher(Imu, prefix + 'imu', QoSProf)
         self.pub_mag = node.create_publisher(MagneticField, prefix + 'mag', QoSProf)
-        self.pub_grav = node.create_publisher(Vector3, prefix + 'grav', QoSProf)
+        self.pub_grav = node.create_publisher(Vector3, prefix + 'grav', QoSProf)   # or Vector3Stamped
         self.pub_temp = node.create_publisher(Temperature, prefix + 'temp', QoSProf)
         self.pub_calib_status = node.create_publisher(String, prefix + 'calib_status', QoSProf)
         self.srv = self.node.create_service(Trigger, prefix + 'calibration_request', self.calibration_request_callback)
@@ -67,7 +67,7 @@ class SensorService:
         self._imu_raw_msg = Imu()
         self._imu_msg = Imu()
         self._mag_msg = MagneticField()
-        self._grav_msg = Vector3()
+        self._grav_msg = Vector3()   # or Vector3Stamped
         self._temp_msg = Temperature()
 
         # precompute covariance matrices from parameters (avoid recomputing every time):
@@ -216,7 +216,7 @@ class SensorService:
         gyr_div = self.param.gyr_factor.value
         grav_div = self.param.grav_factor.value
 
-         # only NDOF_FMC_OFF or NDOF (with FMC) modes provide fused orientation data (but don't provide magnetometer data)
+        # only NDOF_FMC_OFF or NDOF (with FMC) modes provide fused orientation data (but mag data reads zeroes)
         if self.param.operation_mode.value in [0x0B, 0x0C]:
 
             qw_raw, qx_raw, qy_raw, qz_raw = struct.unpack_from("<hhhh", b, 24)
@@ -238,9 +238,11 @@ class SensorService:
             self._imu_msg.header.stamp = now_msg
             self._imu_msg.header.frame_id = frame_id
 
-            self._imu_msg.orientation.x, self._imu_msg.orientation.y, self._imu_msg.orientation.z, self._imu_msg.orientation.w = qn
-            self._imu_msg.header.stamp = now_msg
-            self._imu_msg.header.frame_id = frame_id
+            qx, qy, qz, qw = map(float, qn)   # explicit conversion
+            self._imu_msg.orientation.x = qx
+            self._imu_msg.orientation.y = qy
+            self._imu_msg.orientation.z = qz
+            self._imu_msg.orientation.w = qw
 
             # raw gyroscope data
             self._imu_msg.angular_velocity.x = gx_raw / gyr_div
@@ -288,7 +290,7 @@ class SensorService:
         self._grav_msg.y = gry_raw / grav_div
         self._grav_msg.z = grz_raw / grav_div
 
-        self.pub_grav.publish(self._grav_msg)  # Vector3 does not need header
+        self.pub_grav.publish(self._grav_msg)  # Vector3 does not need header. Use Vector3Stamped if you need timestamp and frame_id
 
         # Header
         self._temp_msg.header.stamp = now_msg
