@@ -26,16 +26,17 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 import json
-from math import sqrt
 import struct
 import sys
 from time import sleep
+import numpy as np
 
 from bno055 import registers
 from bno055.connectors.Connector import Connector
 from bno055.params.NodeParameters import NodeParameters
 
-from geometry_msgs.msg import Vector3
+from geometry_msgs.msg import Vector3   # or Vector3Stamped
+import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
 from sensor_msgs.msg import Imu, MagneticField, Temperature
@@ -58,10 +59,56 @@ class SensorService:
         self.pub_imu_raw = node.create_publisher(Imu, prefix + 'imu_raw', QoSProf)
         self.pub_imu = node.create_publisher(Imu, prefix + 'imu', QoSProf)
         self.pub_mag = node.create_publisher(MagneticField, prefix + 'mag', QoSProf)
-        self.pub_grav = node.create_publisher(Vector3, prefix + 'grav', QoSProf)
+        self.pub_grav = node.create_publisher(Vector3, prefix + 'grav', QoSProf)   # or Vector3Stamped
         self.pub_temp = node.create_publisher(Temperature, prefix + 'temp', QoSProf)
         self.pub_calib_status = node.create_publisher(String, prefix + 'calib_status', QoSProf)
         self.srv = self.node.create_service(Trigger, prefix + 'calibration_request', self.calibration_request_callback)
+
+        # initialize message objects to reuse for publishing (avoid creating new objects every time):
+        self._imu_raw_msg = Imu()
+        self._imu_msg = Imu()
+        self._mag_msg = MagneticField()
+        self._grav_msg = Vector3()   # or Vector3Stamped
+        self._temp_msg = Temperature()
+
+        # precompute covariance matrices from parameters (avoid recomputing every time):
+        self._cov_ori = [
+            self.param.variance_orientation.value[0], 0.0, 0.0,
+            0.0, self.param.variance_orientation.value[1], 0.0,
+            0.0, 0.0, self.param.variance_orientation.value[2],
+        ]
+        self._cov_acc = [
+            self.param.variance_acc.value[0], 0.0, 0.0,
+            0.0, self.param.variance_acc.value[1], 0.0,
+            0.0, 0.0, self.param.variance_acc.value[2],
+        ]
+        self._cov_gyr = [
+            self.param.variance_angular_vel.value[0], 0.0, 0.0,
+            0.0, self.param.variance_angular_vel.value[1], 0.0,
+            0.0, 0.0, self.param.variance_angular_vel.value[2],
+        ]
+        self._cov_mag = [
+            self.param.variance_mag.value[0], 0.0, 0.0,
+            0.0, self.param.variance_mag.value[1], 0.0,
+            0.0, 0.0, self.param.variance_mag.value[2],
+        ]
+
+        self._cov_unknown = [ 
+            -1.0, 0.0, 0.0,
+             0.0, -1.0, 0.0,
+             0.0, 0.0, -1.0,
+        ]
+
+        # Set covariances once on reused messages
+        self._imu_raw_msg.orientation_covariance = self._cov_ori
+        self._imu_raw_msg.linear_acceleration_covariance = self._cov_acc
+        self._imu_raw_msg.angular_velocity_covariance = self._cov_gyr
+
+        self._imu_msg.orientation_covariance = self._cov_ori
+        self._imu_msg.linear_acceleration_covariance = self._cov_acc
+        self._imu_msg.angular_velocity_covariance = self._cov_gyr
+
+        self._mag_msg.magnetic_field_covariance = self._cov_mag
 
         #
         # The sensor reading often contains invalid large jumps of the orientation w component.
@@ -70,7 +117,11 @@ class SensorService:
         #
 
         # Jump detection state variable:
-        self.prev_norm = None            # last computed raw quaternion norm
+        self._prev_q = None  # for sign continuity / jump checks
+
+        # Temperature publish throttling:
+        self._last_temp_publish_time = None  # Track last temperature publish time
+
 
     def configure(self):
         """Configure the IMU sensor hardware."""
@@ -139,7 +190,13 @@ class SensorService:
 
         # Set Device mode
         device_mode = self.param.operation_mode.value
-        self.node.get_logger().info(f"Setting device_mode to {device_mode}")
+        self.is_fusing_mode = self.param.operation_mode.value in [0x0B, 0x0C]
+        # only NDOF_FMC_OFF or NDOF (with FMC) modes provide fused orientation data (but mag data reads zeroes)
+        self.node.get_logger().info(f"Setting device_mode to {device_mode}  is_fusing_mode={self.is_fusing_mode}")
+
+        if not self.is_fusing_mode:
+            # In non-fusing modes, the orientation data is not valid, so set covariance to -1 to indicate unknown.
+            self._imu_raw_msg.orientation_covariance = self._cov_unknown
 
         if not (self.con.transmit(registers.BNO055_OPR_MODE_ADDR, 1, bytes([device_mode]))):
             self.node.get_logger().warn('Unable to set IMU operation mode into operation mode.')
@@ -150,144 +207,124 @@ class SensorService:
     def get_sensor_data(self):
         """Read IMU data from the sensor, parse and publish."""
 
-        # read from sensor
+        # avoid publishing during shutdown
+        if not rclpy.ok():
+            return
+
+        # read from sensor: bytearray, 45 bytes starting from BNO055_ACCEL_DATA_X_LSB_ADDR
         buf = self.con.receive(registers.BNO055_ACCEL_DATA_X_LSB_ADDR, 45)
 
-        #
-        # Sanity check - compute quaternion norm and see if it is valid
-        #
-
-        # Quaternion:
-        q = [
-            self.unpackBytesToFloat(buf[26], buf[27]), # x
-            self.unpackBytesToFloat(buf[28], buf[29]), # y
-            self.unpackBytesToFloat(buf[30], buf[31]), # z
-            self.unpackBytesToFloat(buf[24], buf[25])  # w
-        ]
-
-        # Compute norm safely, return if anything wrong:
-        norm = sqrt(q[0]**2 + q[1]**2 + q[2]**2 + q[3]**2)
-        if abs(norm - 16000.0) > 1000.0:
-            # abnormal norm - invalid quaternion. It should be usually ~16000, as values are large.
-            self.node.get_logger().warn("Invalid quaternion norm: {} — sensor reading ignored".format(norm))
+        if not buf or len(buf) != 45:
+            self.node.get_logger().warn(f"Short read: got {len(buf) if buf else 0} bytes")
             return
-        else:
-            q = [x / norm for x in q]
-            if self.prev_norm is None: # first good value
-                self.prev_norm = norm
 
-        if self.prev_norm is not None:
-            norm_jump = norm - self.prev_norm
-            if abs(norm_jump) > self.prev_norm * 0.05:  # 5% jump
-                self.node.get_logger().warn("Large jump in quaternion norm detected: norm: {}  prev: {}  jump: {}".format(norm, self.prev_norm, norm_jump))
-                return
+        # if unsure about buffer type, copy the buffer to a bytes object
+        #b = buf if isinstance(buf, (bytes, bytearray, memoryview)) else bytes(buf)
+        b = buf
+
+        # Unpack blocks (fewer Python calls)
+        ax_raw, ay_raw, az_raw, mx_raw, my_raw, mz_raw, gx_raw, gy_raw, gz_raw = struct.unpack_from("<hhhhhhhhh", b, 0)
+        lax_raw, lay_raw, laz_raw, grx_raw, gry_raw, grz_raw = struct.unpack_from("<hhhhhh", b, 32)
+        temp_raw = struct.unpack_from("<b", b, 44)[0]  # signed
+
+        # locals (avoid repeated attribute lookups)
+        now_msg = self.node.get_clock().now().to_msg()
+        frame_id = self.param.frame_id.value
+
+        # dividers to convert raw sensor values to physical units, from driver parameters
+        acc_div = self.param.acc_factor.value
+        gyr_div = self.param.gyr_factor.value
+        grav_div = self.param.grav_factor.value
+
+        # only NDOF_FMC_OFF or NDOF (with FMC) modes provide fused orientation data (but mag data reads zeroes)
+        if self.is_fusing_mode:
+
+            qw_raw, qx_raw, qy_raw, qz_raw = struct.unpack_from("<hhhh", b, 24)
+
+            # Normalize quaternion robustly; tolerate modes where it is invalid
+            q = np.array([qx_raw, qy_raw, qz_raw, qw_raw], dtype=float)
+            norm = float(np.linalg.norm(q))
+            if norm < 1e-6 or abs(norm - 16384.0) > 2000.0:
+                self.node.get_logger().warn(f"Invalid quaternion norm: {norm} — publishing identity quaternion")
+                qn = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
             else:
-                self.prev_norm = norm   # first good reading
+                qn = q / norm
+                # sign continuity
+                if self._prev_q is not None and float(np.dot(self._prev_q, qn)) < 0.0:
+                    qn = -qn
+                self._prev_q = qn
 
-        # OK, sanity check passed, we are good to publish the data
+            # Header (single timestamp)
+            self._imu_msg.header.stamp = now_msg
+            self._imu_msg.header.frame_id = frame_id
 
-        # Initialize ROS msgs
-        imu_raw_msg = Imu()
-        imu_msg = Imu()
-        mag_msg = MagneticField()
-        grav_msg = Vector3()
-        temp_msg = Temperature()
+            qx, qy, qz, qw = map(float, qn)   # explicit conversion
+            self._imu_msg.orientation.x = qx
+            self._imu_msg.orientation.y = qy
+            self._imu_msg.orientation.z = qz
+            self._imu_msg.orientation.w = qw
 
-        # Publish raw data
-        imu_raw_msg.header.stamp = self.node.get_clock().now().to_msg()
-        imu_raw_msg.header.frame_id = self.param.frame_id.value
-        # TODO: do headers need sequence counters now?
-        # imu_raw_msg.header.seq = seq
+            # raw gyroscope data
+            self._imu_msg.angular_velocity.x = gx_raw / gyr_div
+            self._imu_msg.angular_velocity.y = gy_raw / gyr_div
+            self._imu_msg.angular_velocity.z = gz_raw / gyr_div
 
-        # TODO: make this an option to publish?
-        imu_raw_msg.orientation_covariance = [
-            self.param.variance_orientation.value[0], 0.0, 0.0,
-            0.0, self.param.variance_orientation.value[1], 0.0,
-            0.0, 0.0, self.param.variance_orientation.value[2]
-        ]
+            # “filtered/linear accel” block
+            self._imu_msg.linear_acceleration.x = lax_raw / acc_div
+            self._imu_msg.linear_acceleration.y = lay_raw / acc_div
+            self._imu_msg.linear_acceleration.z = laz_raw / acc_div
 
-        imu_raw_msg.linear_acceleration.x = \
-            self.unpackBytesToFloat(buf[0], buf[1]) / self.param.acc_factor.value
-        imu_raw_msg.linear_acceleration.y = \
-            self.unpackBytesToFloat(buf[2], buf[3]) / self.param.acc_factor.value
-        imu_raw_msg.linear_acceleration.z = \
-            self.unpackBytesToFloat(buf[4], buf[5]) / self.param.acc_factor.value
-        imu_raw_msg.linear_acceleration_covariance = [
-            self.param.variance_acc.value[0], 0.0, 0.0,
-            0.0, self.param.variance_acc.value[1], 0.0,
-            0.0, 0.0, self.param.variance_acc.value[2]
-        ]
-        imu_raw_msg.angular_velocity.x = \
-            self.unpackBytesToFloat(buf[12], buf[13]) / self.param.gyr_factor.value
-        imu_raw_msg.angular_velocity.y = \
-            self.unpackBytesToFloat(buf[14], buf[15]) / self.param.gyr_factor.value
-        imu_raw_msg.angular_velocity.z = \
-            self.unpackBytesToFloat(buf[16], buf[17]) / self.param.gyr_factor.value
-        imu_raw_msg.angular_velocity_covariance = [
-            self.param.variance_angular_vel.value[0], 0.0, 0.0,
-            0.0, self.param.variance_angular_vel.value[1], 0.0,
-            0.0, 0.0, self.param.variance_angular_vel.value[2]
-        ]
+            self.pub_imu.publish(self._imu_msg)
 
-        # TODO: make this an option to publish?
-        # Publish filtered data
-        imu_msg.header.stamp = self.node.get_clock().now().to_msg()
-        imu_msg.header.frame_id = self.param.frame_id.value
+            # gravity block
+            self._grav_msg.x = grx_raw / grav_div
+            self._grav_msg.y = gry_raw / grav_div
+            self._grav_msg.z = grz_raw / grav_div
 
-        imu_msg.orientation.x, imu_msg.orientation.y, imu_msg.orientation.z, imu_msg.orientation.w = q
-        w = imu_msg.orientation.w
+            self.pub_grav.publish(self._grav_msg)  # Vector3 does not need header. Use Vector3Stamped if you need timestamp and frame_id
 
-        imu_msg.orientation_covariance = imu_raw_msg.orientation_covariance
+        else:
+            # In other modes, we do not have fused orientation data, but have raw magnetometer data
 
-        imu_msg.linear_acceleration.x = \
-            self.unpackBytesToFloat(buf[32], buf[33]) / self.param.acc_factor.value
-        imu_msg.linear_acceleration.y = \
-            self.unpackBytesToFloat(buf[34], buf[35]) / self.param.acc_factor.value
-        imu_msg.linear_acceleration.z = \
-            self.unpackBytesToFloat(buf[36], buf[37]) / self.param.acc_factor.value
-        imu_msg.linear_acceleration_covariance = imu_raw_msg.linear_acceleration_covariance
-        imu_msg.angular_velocity.x = \
-            self.unpackBytesToFloat(buf[12], buf[13]) / self.param.gyr_factor.value
-        imu_msg.angular_velocity.y = \
-            self.unpackBytesToFloat(buf[14], buf[15]) / self.param.gyr_factor.value
-        imu_msg.angular_velocity.z = \
-            self.unpackBytesToFloat(buf[16], buf[17]) / self.param.gyr_factor.value
-        imu_msg.angular_velocity_covariance = imu_raw_msg.angular_velocity_covariance
+            # Headers (same timestamp)
+            self._imu_raw_msg.header.stamp = now_msg
+            self._imu_raw_msg.header.frame_id = frame_id
+            self._mag_msg.header.stamp = now_msg
+            self._mag_msg.header.frame_id = frame_id
 
-        # Publish magnetometer data
-        mag_msg.header.stamp = self.node.get_clock().now().to_msg()
-        mag_msg.header.frame_id = self.param.frame_id.value
-        # mag_msg.header.seq = seq
-        mag_msg.magnetic_field.x = \
-            self.unpackBytesToFloat(buf[6], buf[7]) / self.param.mag_factor.value
-        mag_msg.magnetic_field.y = \
-            self.unpackBytesToFloat(buf[8], buf[9]) / self.param.mag_factor.value
-        mag_msg.magnetic_field.z = \
-            self.unpackBytesToFloat(buf[10], buf[11]) / self.param.mag_factor.value
-        mag_msg.magnetic_field_covariance = [
-            self.param.variance_mag.value[0], 0.0, 0.0,
-            0.0, self.param.variance_mag.value[1], 0.0,
-            0.0, 0.0, self.param.variance_mag.value[2]
-        ]
+            # raw accelerometer data
+            self._imu_raw_msg.linear_acceleration.x = ax_raw / acc_div
+            self._imu_raw_msg.linear_acceleration.y = ay_raw / acc_div
+            self._imu_raw_msg.linear_acceleration.z = az_raw / acc_div
 
-        grav_msg.x = \
-            self.unpackBytesToFloat(buf[38], buf[39]) / self.param.grav_factor.value
-        grav_msg.y = \
-            self.unpackBytesToFloat(buf[40], buf[41]) / self.param.grav_factor.value
-        grav_msg.z = \
-            self.unpackBytesToFloat(buf[42], buf[43]) / self.param.grav_factor.value
+            # raw gyroscope data
+            self._imu_raw_msg.angular_velocity.x = gx_raw / gyr_div
+            self._imu_raw_msg.angular_velocity.y = gy_raw / gyr_div
+            self._imu_raw_msg.angular_velocity.z = gz_raw / gyr_div
 
-        # Publish temperature
-        temp_msg.header.stamp = self.node.get_clock().now().to_msg()
-        temp_msg.header.frame_id = self.param.frame_id.value
-        # temp_msg.header.seq = seq
-        temp_msg.temperature = float(buf[44])
+            self.pub_imu_raw.publish(self._imu_raw_msg)
 
-        self.pub_imu_raw.publish(imu_raw_msg)
-        self.pub_imu.publish(imu_msg)
-        self.pub_mag.publish(mag_msg)
-        self.pub_grav.publish(grav_msg)
-        self.pub_temp.publish(temp_msg)
+            # raw magnetometer data
+            mag_div = self.param.mag_factor.value
+            self._mag_msg.magnetic_field.x = mx_raw / mag_div  # 16 million LSB per Tesla, as per datasheet
+            self._mag_msg.magnetic_field.y = my_raw / mag_div
+            self._mag_msg.magnetic_field.z = mz_raw / mag_div
+
+            self.pub_mag.publish(self._mag_msg)
+
+        # Temperature - publish at most once per second
+        current_time = self.node.get_clock().now()
+        if self._last_temp_publish_time is None or \
+           (current_time - self._last_temp_publish_time).nanoseconds >= 1_000_000_000:
+            # Header
+            self._temp_msg.header.stamp = now_msg
+            self._temp_msg.header.frame_id = frame_id
+
+            # temperature - one byte:
+            self._temp_msg.temperature = float(temp_raw)  # a signed byte with unit 1 degree Celsius
+
+            self.pub_temp.publish(self._temp_msg)
+            self._last_temp_publish_time = current_time
 
 
     def get_calib_status(self):
@@ -297,13 +334,13 @@ class SensorService:
         Quality scale: 0 = bad, 3 = best
         """
         calib_status = self.con.receive(registers.BNO055_CALIB_STAT_ADDR, 1)
-        sys = (calib_status[0] >> 6) & 0x03
-        gyro = (calib_status[0] >> 4) & 0x03
-        accel = (calib_status[0] >> 2) & 0x03
-        mag = calib_status[0] & 0x03
+        c_sys = (calib_status[0] >> 6) & 0x03
+        c_gyro = (calib_status[0] >> 4) & 0x03
+        c_accel = (calib_status[0] >> 2) & 0x03
+        c_mag = calib_status[0] & 0x03
 
         # Create dictionary (map) and convert it to JSON string:
-        calib_status_dict = {'sys': sys, 'gyro': gyro, 'accel': accel, 'mag': mag}
+        calib_status_dict = {'sys': c_sys, 'gyro': c_gyro, 'accel': c_accel, 'mag': c_mag}
         calib_status_str = String()
         calib_status_str.data = json.dumps(calib_status_dict)
 
@@ -440,6 +477,3 @@ class SensorService:
         response.success = True
         response.message = str(calib_data)
         return response
-
-    def unpackBytesToFloat(self, start, end):
-        return float(struct.unpack('h', struct.pack('BB', start, end))[0])
