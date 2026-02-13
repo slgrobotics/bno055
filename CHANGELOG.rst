@@ -6,6 +6,7 @@ Changelog for package bno055
 * Bump to 0.5.1 to prep for release
 * Optimized get_sensor_data() for speed, only publish necessary topics based on operation mode
 * Added launch files for raw data and imu_tools madgwick filter, and one to avoid config file inclusion.
+* Contributors: Sergei Grichine
 
 0.5.0 (2024-02-17)
 ------------------
