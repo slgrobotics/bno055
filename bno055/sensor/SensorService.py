@@ -119,6 +119,9 @@ class SensorService:
         # Jump detection state variable:
         self._prev_q = None  # for sign continuity / jump checks
 
+        # Temperature publish throttling:
+        self._last_temp_publish_time = None  # Track last temperature publish time
+
 
     def configure(self):
         """Configure the IMU sensor hardware."""
@@ -193,7 +196,7 @@ class SensorService:
 
         if not self.is_fusing_mode:
             # In non-fusing modes, the orientation data is not valid, so set covariance to -1 to indicate unknown.
-            self._cov_ori = self._cov_unknown
+            self._imu_raw_msg.orientation_covariance = self._cov_unknown
 
         if not (self.con.transmit(registers.BNO055_OPR_MODE_ADDR, 1, bytes([device_mode]))):
             self.node.get_logger().warn('Unable to set IMU operation mode into operation mode.')
@@ -309,14 +312,19 @@ class SensorService:
 
             self.pub_mag.publish(self._mag_msg)
 
-        # Header
-        self._temp_msg.header.stamp = now_msg
-        self._temp_msg.header.frame_id = frame_id
+        # Temperature - publish at most once per second
+        current_time = self.node.get_clock().now()
+        if self._last_temp_publish_time is None or \
+           (current_time - self._last_temp_publish_time).nanoseconds >= 1_000_000_000:
+            # Header
+            self._temp_msg.header.stamp = now_msg
+            self._temp_msg.header.frame_id = frame_id
 
-        # temperature - one byte:
-        self._temp_msg.temperature = float(temp_raw)  # a signed byte with unit 1 degree Celsius
+            # temperature - one byte:
+            self._temp_msg.temperature = float(temp_raw)  # a signed byte with unit 1 degree Celsius
 
-        self.pub_temp.publish(self._temp_msg)
+            self.pub_temp.publish(self._temp_msg)
+            self._last_temp_publish_time = current_time
 
 
     def get_calib_status(self):
