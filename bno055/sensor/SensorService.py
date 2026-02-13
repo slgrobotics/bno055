@@ -191,6 +191,10 @@ class SensorService:
     def get_sensor_data(self):
         """Read IMU data from the sensor, parse and publish."""
 
+        # avoid publishing during shutdown
+        if not rclpy.ok():
+            return
+
         # read from sensor: bytearray, 45 bytes starting from BNO055_ACCEL_DATA_X_LSB_ADDR
         buf = self.con.receive(registers.BNO055_ACCEL_DATA_X_LSB_ADDR, 45)
 
@@ -309,13 +313,13 @@ class SensorService:
         Quality scale: 0 = bad, 3 = best
         """
         calib_status = self.con.receive(registers.BNO055_CALIB_STAT_ADDR, 1)
-        sys = (calib_status[0] >> 6) & 0x03
-        gyro = (calib_status[0] >> 4) & 0x03
-        accel = (calib_status[0] >> 2) & 0x03
-        mag = calib_status[0] & 0x03
+        c_sys = (calib_status[0] >> 6) & 0x03
+        c_gyro = (calib_status[0] >> 4) & 0x03
+        c_accel = (calib_status[0] >> 2) & 0x03
+        c_mag = calib_status[0] & 0x03
 
         # Create dictionary (map) and convert it to JSON string:
-        calib_status_dict = {'sys': sys, 'gyro': gyro, 'accel': accel, 'mag': mag}
+        calib_status_dict = {'sys': c_sys, 'gyro': c_gyro, 'accel': c_accel, 'mag': c_mag}
         calib_status_str = String()
         calib_status_str.data = json.dumps(calib_status_dict)
 
