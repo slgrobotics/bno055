@@ -69,8 +69,8 @@ class Bno055Node(Node):
         elif self.param.connection_type.value == I2C.CONNECTIONTYPE_I2C:
             connector = I2C(
                 self,
-                self.param.i2c_bus.value,
-                self.param.i2c_addr.value,
+                self.param.i2c_bus.value,   # INTEGER, e.g. 1 for Raspberry Pi
+                self.param.i2c_addr.value,  # INTEGER_ARRAY, e.g. [0x28, 0x29] for Adafruit BNO055 and GY-85 clone with both jumpers closed
             )
         else:
             raise NotImplementedError(

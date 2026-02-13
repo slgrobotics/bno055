@@ -58,7 +58,7 @@ class NodeParameters:
         # I2C bus number
         node.declare_parameter('i2c_bus', value=0)
         # I2C address
-        node.declare_parameter('i2c_addr', value=0x28)
+        node.declare_parameter('i2c_addr', value=[0x28, 0x29])  # Adafruit - 0x28, GY Clone - 0x29 (with both jumpers closed)
         # UART port
         node.declare_parameter('uart_port', value='/dev/ttyUSB0')
         # UART Baud Rate
@@ -116,8 +116,8 @@ class NodeParameters:
                 self.i2c_bus = node.get_parameter('i2c_bus')
                 node.get_logger().info('\ti2c_bus:\t\t"%s"' % self.i2c_bus.value)
 
-                self.i2c_addr = node.get_parameter('i2c_addr')
-                node.get_logger().info('\ti2c_addr:\t\t"%s"' % self.i2c_addr.value)
+                self.i2c_addr = node.get_parameter('i2c_addr')  # INTEGER_ARRAY, e.g. [0x28, 0x29] for Adafruit BNO055 and GY-85 clone with both jumpers closed
+                node.get_logger().info('\ti2c_addr:\t\t"%s"' % ['0x%02x' % addr for addr in self.i2c_addr.value])
 
             elif self.connection_type.value == UART.CONNECTIONTYPE_UART:
 

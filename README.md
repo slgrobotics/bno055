@@ -57,7 +57,7 @@ ros2 run bno055 bno055 --ros-args --params-file ./src/bno055/bno055/params/bno05
 
 - **connection_type=i2c**: Defines I2C as sensor connection type; default='uart'
 - **i2c_bus**: The integer I2C bus number to use; default=0
-- **i2c_address**: The hexadecimal I2C address to use; default=0x28
+- **i2c_address**: The hexadecimal I2C addresses to use; default=[0x28,0x29]
   
 
 ### Sensor Configuration
