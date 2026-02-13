@@ -36,6 +36,7 @@ from bno055.connectors.Connector import Connector
 from bno055.params.NodeParameters import NodeParameters
 
 from geometry_msgs.msg import Vector3   # or Vector3Stamped
+import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
 from sensor_msgs.msg import Imu, MagneticField, Temperature
