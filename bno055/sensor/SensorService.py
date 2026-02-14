@@ -53,15 +53,15 @@ class SensorService:
         self.param = param
 
         prefix = self.param.ros_topic_prefix.value
-        QoSProf = QoSProfile(depth=10)
+        qos_profile = QoSProfile(depth=10)
 
         # create topic publishers:
-        self.pub_imu_raw = node.create_publisher(Imu, prefix + 'imu_raw', QoSProf)
-        self.pub_imu = node.create_publisher(Imu, prefix + 'imu', QoSProf)
-        self.pub_mag = node.create_publisher(MagneticField, prefix + 'mag', QoSProf)
-        self.pub_grav = node.create_publisher(Vector3, prefix + 'grav', QoSProf)   # or Vector3Stamped
-        self.pub_temp = node.create_publisher(Temperature, prefix + 'temp', QoSProf)
-        self.pub_calib_status = node.create_publisher(String, prefix + 'calib_status', QoSProf)
+        self.pub_imu_raw = node.create_publisher(Imu, prefix + 'imu_raw', qos_profile)
+        self.pub_imu = node.create_publisher(Imu, prefix + 'imu', qos_profile)
+        self.pub_mag = node.create_publisher(MagneticField, prefix + 'mag', qos_profile)
+        self.pub_grav = node.create_publisher(Vector3, prefix + 'grav', qos_profile)   # or Vector3Stamped
+        self.pub_temp = node.create_publisher(Temperature, prefix + 'temp', qos_profile)
+        self.pub_calib_status = node.create_publisher(String, prefix + 'calib_status', qos_profile)
         self.srv = self.node.create_service(Trigger, prefix + 'calibration_request', self.calibration_request_callback)
 
         # initialize message objects to reuse for publishing (avoid creating new objects every time):
@@ -190,7 +190,7 @@ class SensorService:
 
         # Set Device mode
         device_mode = self.param.operation_mode.value
-        self.is_fusing_mode = self.param.operation_mode.value in [0x0B, 0x0C]
+        self.is_fusing_mode = self.param.operation_mode.value in (0x0B, 0x0C)
         # only NDOF_FMC_OFF or NDOF (with FMC) modes provide fused orientation data (but mag data reads zeroes)
         self.node.get_logger().info(f"Setting device_mode to {device_mode}  is_fusing_mode={self.is_fusing_mode}")
 
@@ -207,8 +207,8 @@ class SensorService:
     def get_sensor_data(self):
         """Read IMU data from the sensor, parse and publish."""
 
-        # avoid publishing during shutdown
-        if not rclpy.ok():
+        # avoid publishing/logging during shutdown
+        if not rclpy.ok() or not self.node.context.ok():
             return
 
         # read from sensor: bytearray, 45 bytes starting from BNO055_ACCEL_DATA_X_LSB_ADDR
@@ -245,8 +245,12 @@ class SensorService:
             q = np.array([qx_raw, qy_raw, qz_raw, qw_raw], dtype=float)
             norm = float(np.linalg.norm(q))
             if norm < 1e-6 or abs(norm - 16384.0) > 2000.0:
-                self.node.get_logger().warn(f"Invalid quaternion norm: {norm} — publishing identity quaternion")
-                qn = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
+                if self._prev_q is None:
+                    self.node.get_logger().warn(f"Invalid quaternion norm: {norm} — skipped publishing imu message to avoid invalid data")
+                    return  # no valid reading and no previous reading - skip publishing to avoid invalid data
+                else:
+                    self.node.get_logger().warn(f"Invalid quaternion norm: {norm} — publishing previous quaternion")
+                    qn = self._prev_q  # hold last valid reading to mitigate jumps, if we have one
             else:
                 qn = q / norm
                 # sign continuity
