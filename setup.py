@@ -30,13 +30,11 @@ setup(
     keywords=['ROS', 'ROS2'],
     classifiers=[
         'Intended Audience :: Developers',
-        'License :: OSI Approved :: BSD',
         'Programming Language :: Python',
         'Topic :: Software Development',
     ],
     description='Bosch BNO055 IMU driver for ROS2',
     license='BSD',
-    tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'bno055 = bno055.bno055:main',
