@@ -117,7 +117,7 @@ class Bno055Node(Node):
 
         if not self._lock.acquire(blocking=False):
             # Consider throttling this to avoid spam
-            self.get_logger().warn("I/O busy - skipping IMU read cycle")
+            self.get_logger().warning("I/O busy - skipping IMU read cycle")
             return
 
         try:
@@ -126,9 +126,9 @@ class Bno055Node(Node):
             # Usually means "data not ready"; warning every cycle can spam logs
             self.get_logger().debug("BusOverRunException (data not ready)")
         except ZeroDivisionError:
-            self.get_logger().warn("ZeroDivisionError in get_sensor_data()")
+            self.get_logger().warning("ZeroDivisionError in get_sensor_data()")
         except Exception as e:  # noqa: B902
-            self.get_logger().warn(f"Receiving sensor data failed with {type(e).__name__}: {e}")
+            self.get_logger().warning(f"Receiving sensor data failed with {type(e).__name__}: {e}")
         finally:
             self._lock.release()
 
@@ -138,13 +138,13 @@ class Bno055Node(Node):
             return
 
         if not self._lock.acquire(blocking=False):
-            self.get_logger().warn("I/O busy - skipping calib status cycle")
+            self.get_logger().warning("I/O busy - skipping calib status cycle")
             return
 
         try:
             self.sensor.get_calib_status()
         except Exception as e:  # noqa: B902
-            self.get_logger().warn(f"Receiving calib status failed with {type(e).__name__}: {e}")
+            self.get_logger().warning(f"Receiving calib status failed with {type(e).__name__}: {e}")
         finally:
             self._lock.release()
 

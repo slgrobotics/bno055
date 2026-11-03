@@ -139,19 +139,19 @@ class SensorService:
 
         # IMU connected => apply IMU Configuration:
         if not (self.con.transmit(registers.BNO055_OPR_MODE_ADDR, 1, bytes([registers.OPERATION_MODE_CONFIG]))):
-            self.node.get_logger().warn('Unable to set IMU into config mode.')
+            self.node.get_logger().warning('Unable to set IMU into config mode.')
 
         if not (self.con.transmit(registers.BNO055_PWR_MODE_ADDR, 1, bytes([registers.POWER_MODE_NORMAL]))):
-            self.node.get_logger().warn('Unable to set IMU normal power mode.')
+            self.node.get_logger().warning('Unable to set IMU normal power mode.')
 
         if not (self.con.transmit(registers.BNO055_PAGE_ID_ADDR, 1, bytes([0x00]))):
-            self.node.get_logger().warn('Unable to set IMU register page 0.')
+            self.node.get_logger().warning('Unable to set IMU register page 0.')
 
         if not (self.con.transmit(registers.BNO055_SYS_TRIGGER_ADDR, 1, bytes([0x00]))):
-            self.node.get_logger().warn('Unable to start IMU.')
+            self.node.get_logger().warning('Unable to start IMU.')
 
         if not (self.con.transmit(registers.BNO055_UNIT_SEL_ADDR, 1, bytes([0x83]))):
-            self.node.get_logger().warn('Unable to set IMU units.')
+            self.node.get_logger().warning('Unable to set IMU units.')
 
         # The sensor placement configuration (Axis remapping) defines the
         # position and orientation of the sensor mount.
@@ -168,7 +168,7 @@ class SensorService:
         }
         if not (self.con.transmit(registers.BNO055_AXIS_MAP_CONFIG_ADDR, 2,
                                   mount_positions[self.param.placement_axis_remap.value])):
-            self.node.get_logger().warn('Unable to set sensor placement configuration.')
+            self.node.get_logger().warning('Unable to set sensor placement configuration.')
 
         # Show the current sensor offsets
         self.node.get_logger().info('Current sensor offsets:')
@@ -185,7 +185,7 @@ class SensorService:
                 self.node.get_logger().info('Successfully configured sensor offsets to:')
                 self.print_calib_data()
             else:
-                self.node.get_logger().warn('setting offsets failed')
+                self.node.get_logger().warning('setting offsets failed')
 
 
         # Set Device mode
@@ -199,7 +199,7 @@ class SensorService:
             self._imu_raw_msg.orientation_covariance = self._cov_unknown
 
         if not (self.con.transmit(registers.BNO055_OPR_MODE_ADDR, 1, bytes([device_mode]))):
-            self.node.get_logger().warn('Unable to set IMU operation mode into operation mode.')
+            self.node.get_logger().warning('Unable to set IMU operation mode into operation mode.')
 
         self.node.get_logger().info('Bosch BNO055 IMU configuration complete.')
 
@@ -215,7 +215,7 @@ class SensorService:
         buf = self.con.receive(registers.BNO055_ACCEL_DATA_X_LSB_ADDR, 45)
 
         if not buf or len(buf) != 45:
-            self.node.get_logger().warn(f"Short read: got {len(buf) if buf else 0} bytes")
+            self.node.get_logger().warning(f"Short read: got {len(buf) if buf else 0} bytes")
             return
 
         # if unsure about buffer type, copy the buffer to a bytes object
@@ -246,10 +246,10 @@ class SensorService:
             norm = float(np.linalg.norm(q))
             if norm < 1e-6 or abs(norm - 16384.0) > 2000.0:
                 if self._prev_q is None:
-                    self.node.get_logger().warn(f"Invalid quaternion norm: {norm} — skipped publishing imu message to avoid invalid data")
+                    self.node.get_logger().warning(f"Invalid quaternion norm: {norm} — skipped publishing imu message to avoid invalid data")
                     return  # no valid reading and no previous reading - skip publishing to avoid invalid data
                 else:
-                    self.node.get_logger().warn(f"Invalid quaternion norm: {norm} — publishing previous quaternion")
+                    self.node.get_logger().warning(f"Invalid quaternion norm: {norm} — publishing previous quaternion")
                     qn = self._prev_q  # hold last valid reading to mitigate jumps, if we have one
             else:
                 qn = q / norm
@@ -473,11 +473,11 @@ class SensorService:
 
     def calibration_request_callback(self, request, response):
         if not (self.con.transmit(registers.BNO055_OPR_MODE_ADDR, 1, bytes([registers.OPERATION_MODE_CONFIG]))):
-            self.node.get_logger().warn('Unable to set IMU into config mode.')
+            self.node.get_logger().warning('Unable to set IMU into config mode.')
         sleep(0.025)
         calib_data = self.get_calib_data()
         if not (self.con.transmit(registers.BNO055_OPR_MODE_ADDR, 1, bytes([registers.OPERATION_MODE_NDOF]))):
-            self.node.get_logger().warn('Unable to set IMU operation mode into operation mode.')
+            self.node.get_logger().warning('Unable to set IMU operation mode into operation mode.')
         response.success = True
         response.message = str(calib_data)
         return response
